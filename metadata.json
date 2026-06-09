@@ -1,0 +1,5 @@
+{
+  "name": "Gerador de Declaração de Transporte",
+  "description": "Uma aplicação profissional para gerar e gerenciar declarações de transporte de equipamentos sem nota fiscal, com numeração sequencial e exportação para PDF.",
+  "requestFramePermissions": []
+}
