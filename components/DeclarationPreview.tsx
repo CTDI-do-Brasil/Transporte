@@ -115,13 +115,19 @@ export const DeclarationPreview: React.FC<Props> = ({ declaration, onSignatureCl
 
       {/* Signatures */}
       <div className="grid grid-cols-2 gap-10 mt-10">
-        <div className="text-center">
-          <div className="h-20 border-b border-black mb-2 relative">
+        <div className="text-center flex flex-col items-center">
+          <div className="h-20 border-b border-black mb-2 relative w-full">
             {declaration.signatureSender && (
               <img src={declaration.signatureSender} alt="Assinatura Remetente" className="max-h-full max-w-full mx-auto" />
             )}
           </div>
           <div className="text-[9pt] uppercase font-bold text-black">Assinatura do Remetente</div>
+          <div className="text-[9pt] font-bold text-black mt-3 flex items-baseline gap-1 w-full justify-center">
+            <span>CPF:</span>
+            <span className="border-b border-dotted border-black w-48 inline-block text-center font-mono text-[9pt] h-[14px] leading-tight">
+              {declaration.sender.cpf || ''}
+            </span>
+          </div>
         </div>
 
         <div className="text-center">
