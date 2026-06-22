@@ -76,44 +76,71 @@ export const SmartImportModal: React.FC<Props> = ({ isOpen, onClose, onImport })
         };
 
         // ---- Mappings ----
-        const careOf = get('shipToCareOf', 'Nome:') || scan(/shipToCareOf\s+(.+)/i);
+        const careOf = get('care of', 'ship to', 'employee name', 'shipToCareOf', 'Nome:') || scan(/shipToCareOf\s+(.+)/i);
         if (careOf) { sender.name = careOf; sender.contact = careOf; }
 
-        const taxNum = get('taxNumber', 'CPF:') || scan(/taxNumber\s+([\d.-]+)/i);
-        if (taxNum) {
+        const taxNum = get('tax number', 'taxNumber', 'CPF:') || scan(/taxNumber\s+([\d.-]+)/i);
+        if (taxNum && taxNum.toUpperCase() !== 'N/A' && taxNum !== '-') {
             const digits = taxNum.replace(/\D/g, '');
-            sender.cpf = digits.length === 11 ? digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4') : taxNum;
+            if (digits.length === 11) {
+                sender.cpf = digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
+            } else if (digits.length === 14) {
+                sender.cnpj = digits.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5');
+            } else {
+                sender.cpf = taxNum;
+            }
         }
 
-        const addr1 = get('shipToAddress1') || scan(/shipToAddress1\s+(.+)/i);
-        const addr2 = get('shipToAddress2') || scan(/shipToAddress2\s+(.+)/i);
-        if (addr1 || addr2) {
+        const addr1 = get('address line 1', 'shipToAddress1') || scan(/shipToAddress1\s+(.+)/i);
+        const addr2 = get('address line 2', 'shipToAddress2') || scan(/shipToAddress2\s+(.+)/i);
+        if (addr1) {
             let street = addr1;
-            let number = 'S/N';
+            let number = '';
 
-            const match = addr1.match(/(.*?)(\d+.*)$/);
+            const match = addr1.match(/(.*?)(?:,\s*|\s+)(\d+)(?:\s*-\s*(.*))?$/);
             if (match) {
                 street = match[1].trim();
                 number = match[2].trim();
+                const rest = match[3];
                 if (street.endsWith(',')) street = street.slice(0, -1).trim();
+                if (rest) {
+                    sender.bairro = rest.trim();
+                }
+            } else {
+                const simpleMatch = addr1.match(/(.*?)(\d+.*)$/);
+                if (simpleMatch) {
+                    street = simpleMatch[1].trim();
+                    number = simpleMatch[2].trim();
+                    if (street.endsWith(',')) street = street.slice(0, -1).trim();
+                }
             }
 
             sender.address = street;
-            sender.number = number;
-            sender.bairro = addr2 || 'Centro';
+            sender.number = number || 'S/N';
+            
+            if (addr2 && addr2 !== '-') {
+                sender.bairro = sender.bairro ? `${sender.bairro}, ${addr2}` : addr2;
+            } else if (!sender.bairro) {
+                sender.bairro = 'Centro';
+            }
         }
 
-        const city = get('shipToCity', 'Municipio:') || scan(/shipToCity\s+(.+)/i);
+        const city = get('city', 'shipToCity', 'Municipio:') || scan(/shipToCity\s+(.+)/i);
         if (city) sender.city = city;
 
-        const state = get('shipToState', 'Estado:') || scan(/shipToState\s+([A-Z]{2})/i);
+        const state = get('state', 'shipToState', 'Estado:') || scan(/shipToState\s+([A-Z]{2})/i);
         if (state) sender.state = state.toUpperCase().slice(0, 2);
 
-        const zip = get('shipToPostalCode', 'CEP:') || scan(/shipToPostalCode\s+([\d-]+)/i);
+        const zip = get('postal code', 'shipToPostalCode', 'CEP:') || scan(/shipToPostalCode\s+([\d-]+)/i);
         if (zip) {
             const zipDigits = zip.replace(/\D/g, '');
             sender.zipCode = zipDigits.length === 8 ? zipDigits.replace(/(\d{5})(\d{3})/, '$1-$2') : zip;
         }
+
+        const email = get('employee email', 'employeeEmail', 'E-mail:') || scan(/employeeEmail\s+(\S+@\S+)/i) || scan(/([\w.-]+@[\w.-]+\.\w+)/);
+        const extraMetadata = {
+            employeeEmail: email || undefined
+        };
 
         const lobVal = get('lob') || scan(/\blob\s+(\S+)/i) || get('Razão Social da Empresa');
         if (lobVal) {
@@ -121,20 +148,22 @@ export const SmartImportModal: React.FC<Props> = ({ isOpen, onClose, onImport })
             if (l === 'gev' || l.includes('vernova')) sender.companyName = 'GE Vernova';
             else if (l === 'geh-br-le1' || l.includes('healthcare')) sender.companyName = 'GE HealthCare';
             else sender.companyName = lobVal;
+        } else if (email) {
+            const emailLower = email.toLowerCase();
+            if (emailLower.includes('gehealthcare')) {
+                sender.companyName = 'GE HealthCare';
+            } else if (emailLower.includes('vernova') || emailLower.includes('ge.com')) {
+                sender.companyName = 'GE Vernova';
+            }
         }
 
         const contact = get('contact', 'Contato:') || scan(/contact\s+(.+)/i);
         if (contact) sender.contact = contact;
 
-        const reqNum = get('requestNumber') || scan(/requestNumber\s+(\S+)/i) || scan(/(RITM\d+)/i);
+        const reqNum = get('customer ticket #', 'requestNumber') || scan(/requestNumber\s+(\S+)/i) || scan(/(RITM\d+)/i) || scan(/(HARRL\d+)/i);
         if (reqNum) requestNumber = reqNum;
 
-        const email = get('employeeEmail', 'E-mail:') || scan(/employeeEmail\s+(\S+@\S+)/i) || scan(/([\w.-]+@[\w.-]+\.\w+)/);
-        const extraMetadata = {
-            employeeEmail: email || undefined
-        };
-
-        const empPhone = get('employeePhone', 'Telefone/Fax:') || scan(/employeePhone\s+(\S+)/i);
+        const empPhone = get('employee phone', 'employeePhone', 'Telefone/Fax:') || scan(/employeePhone\s+(\S+)/i);
         if (empPhone) {
             let processedPhone = empPhone.trim();
             
@@ -167,11 +196,43 @@ export const SmartImportModal: React.FC<Props> = ({ isOpen, onClose, onImport })
         const serialNum = get('returnSerialNumber', 'Nº de Série') || scan(/returnSerialNumber\s+(\S+)/i);
         if (serialNum) {
             items.push({
-                description: '',
-                model: '',
+                description: get('returnEquipmentDescription', 'Descrição') || '',
+                model: get('returnModelNumber', 'Modelo') || '',
                 serialNumber: serialNum,
                 unitValue: 0
             });
+        }
+
+        // Also check all lines for table rows of equipment
+        for (const line of lines) {
+            const parts = line.split('\t');
+            if (parts.length >= 2) {
+                const firstPart = parts[0].trim();
+                // If it starts with a number, it's likely a row in a table (e.g. 1, 3, 4)
+                if (/^\d+$/.test(firstPart)) {
+                    const desc = parts[1] ? parts[1].trim() : '';
+                    const model = parts[2] ? parts[2].trim() : '';
+                    const serial = parts[3] ? parts[3].trim() : '';
+                    let val = 0;
+                    if (parts[4]) {
+                        const valStr = parts[4].replace(/[^\d.,]/g, '').replace(',', '.');
+                        const parsedVal = parseFloat(valStr);
+                        if (!isNaN(parsedVal)) val = parsedVal;
+                    }
+
+                    if (desc || model || serial) {
+                        // Check if this serial is already added to avoid duplicates
+                        if (!items.some(it => it.serialNumber && it.serialNumber === serial)) {
+                            items.push({
+                                description: desc,
+                                model: model,
+                                serialNumber: serial,
+                                unitValue: val
+                            });
+                        }
+                    }
+                }
+            }
         }
 
         onImport({
