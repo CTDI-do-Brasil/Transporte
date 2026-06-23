@@ -7,6 +7,7 @@ interface User {
     role: 'master' | 'user';
     email: string;
     created_at: string;
+    receive_dni_emails?: boolean;
 }
 
 interface Props {
@@ -21,8 +22,35 @@ export const UsersView: React.FC<Props> = ({ apiUrl, showNotification }) => {
     const [isReseting, setIsReseting] = useState<{ [key: number]: boolean }>({});
     const [error, setError] = useState('');
     const [showForm, setShowForm] = useState(false);
-    const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' as 'master' | 'user', email: '' });
+    const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' as 'master' | 'user', email: '', receiveDniEmails: false });
     const [editingUserId, setEditingUserId] = useState<number | null>(null);
+
+    const handleToggleDniEmails = async (user: User) => {
+        const nextState = !user.receive_dni_emails;
+        
+        // Optimistic update
+        setUsers(prev => prev.map(u => u.id === user.id ? { ...u, receive_dni_emails: nextState } : u));
+        
+        try {
+            const response = await fetch(`${apiUrl}/users/${user.id}/toggle-emails`, {
+                method: 'PATCH',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'x-username': sessionStorage.getItem('username') || 'admin'
+                },
+                body: JSON.stringify({ receiveDniEmails: nextState })
+            });
+            if (!response.ok) {
+                // revert on error
+                setUsers(prev => prev.map(u => u.id === user.id ? { ...u, receive_dni_emails: !nextState } : u));
+                showNotification('Erro', 'Houve um problema ao atualizar a preferência de e-mail.', 'error');
+            }
+        } catch (err) {
+            // revert on error
+            setUsers(prev => prev.map(u => u.id === user.id ? { ...u, receive_dni_emails: !nextState } : u));
+            showNotification('Erro de Conexão', 'Não foi possível conectar ao servidor.', 'error');
+        }
+    };
 
     const fetchUsers = async () => {
         setIsLoading(true);
@@ -60,7 +88,7 @@ export const UsersView: React.FC<Props> = ({ apiUrl, showNotification }) => {
             if (response.ok) {
                 setShowForm(false);
                 setEditingUserId(null);
-                setNewUser({ username: '', password: '', role: 'user', email: '' });
+                setNewUser({ username: '', password: '', role: 'user', email: '', receiveDniEmails: false });
                 fetchUsers();
                 showNotification(
                     'Sucesso',
@@ -144,7 +172,7 @@ export const UsersView: React.FC<Props> = ({ apiUrl, showNotification }) => {
                 <button
                     onClick={() => {
                         setEditingUserId(null);
-                        setNewUser({ username: '', password: '', role: 'user', email: '' });
+                        setNewUser({ username: '', password: '', role: 'user', email: '', receiveDniEmails: false });
                         setShowForm(true);
                     }}
                     className="flex items-center gap-2 px-6 py-3.5 bg-zinc-950 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-zinc-800 transition-all shadow-xl shadow-zinc-200"
@@ -206,6 +234,18 @@ export const UsersView: React.FC<Props> = ({ apiUrl, showNotification }) => {
                                             <option value="user">Comum</option>
                                             <option value="master">Admin</option>
                                         </select>
+                                    </div>
+                                    <div className="flex items-center gap-2 pt-1 pb-2">
+                                        <input
+                                            type="checkbox"
+                                            id="receiveDniEmails"
+                                            checked={newUser.receiveDniEmails}
+                                            onChange={e => setNewUser({ ...newUser, receiveDniEmails: e.target.checked })}
+                                            className="w-4 h-4 text-zinc-950 border-zinc-300 rounded focus:ring-zinc-900 focus:ring-1 cursor-pointer"
+                                        />
+                                        <label htmlFor="receiveDniEmails" className="text-[10px] font-black text-zinc-500 uppercase tracking-wider cursor-pointer select-none">
+                                            Receber E-mails de DNI
+                                        </label>
                                     </div>
                                 </div>
                             </div>
@@ -269,7 +309,18 @@ export const UsersView: React.FC<Props> = ({ apiUrl, showNotification }) => {
                                             {new Date(user.created_at).toLocaleDateString('pt-BR')}
                                         </td>
                                         <td className="px-8 py-6 text-right">
-                                            <div className="flex justify-end gap-2">
+                                            <div className="flex justify-end gap-2 items-center">
+                                                <label 
+                                                    className={`p-3 bg-white border rounded-xl shadow-sm cursor-pointer transition-all flex items-center justify-center hover:bg-zinc-50 ${user.receive_dni_emails ? 'border-zinc-900 text-zinc-900' : 'border-zinc-100 text-zinc-400'}`}
+                                                    title={user.receive_dni_emails ? "Recebe e-mails de DNI (Ativado)" : "Não recebe e-mails de DNI (Desativado)"}
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={user.receive_dni_emails || false}
+                                                        onChange={() => handleToggleDniEmails(user)}
+                                                        className="w-4 h-4 text-zinc-950 border-zinc-300 rounded focus:ring-zinc-900 focus:ring-1 cursor-pointer"
+                                                    />
+                                                </label>
                                                 <button
                                                     onClick={() => handleSendResetEmail(user)}
                                                     disabled={isReseting[user.id]}
@@ -281,7 +332,7 @@ export const UsersView: React.FC<Props> = ({ apiUrl, showNotification }) => {
                                                 <button
                                                     onClick={() => {
                                                         setEditingUserId(user.id);
-                                                        setNewUser({ username: user.username, password: '', role: user.role, email: user.email });
+                                                        setNewUser({ username: user.username, password: '', role: user.role, email: user.email, receiveDniEmails: user.receive_dni_emails || false });
                                                         setShowForm(true);
                                                     }}
                                                     className="p-3 bg-white hover:bg-zinc-950 text-zinc-400 hover:text-white rounded-xl shadow-sm border border-zinc-100 transition-all"

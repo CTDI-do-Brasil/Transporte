@@ -19,7 +19,7 @@ const __dirname = path.dirname(__filename);
 // In-Memory store for offline/local development without Postgres DB
 const inMemoryStore = {
     users: [
-        { id: 1, username: 'admin', password: '', role: 'master', email: 'admin@ctdi.com' }
+        { id: 1, username: 'admin', password: '', role: 'master', email: 'admin@ctdi.com', receive_dni_emails: true }
     ],
     declarations: [],
     auditLogs: []
@@ -90,6 +90,7 @@ try {
     // Auth columns
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(255)');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expiry TIMESTAMP');
+    await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_dni_emails BOOLEAN DEFAULT FALSE');
 } catch (err) {
     console.warn('Could not ensure columns:', err.message);
 }
@@ -296,19 +297,35 @@ app.post('/api/declarations', async (req, res) => {
         // Notification Email
         try {
             console.log(`Iniciando processo de e-mail para usuário: ${usernameForLog}`);
-            const userResult = await pool.query('SELECT email FROM users WHERE username = $1', [usernameForLog]);
-            const userEmail = userResult.rows[0]?.email;
+            let userEmail = '';
+            let masterEmails = [];
+
+            try {
+                const userResult = await pool.query('SELECT email FROM users WHERE username = $1', [usernameForLog]);
+                userEmail = userResult.rows[0]?.email;
+                if (userEmail) {
+                    const normalizedUserEmail = userEmail.toLowerCase().trim();
+                    const recipientsResult = await pool.query("SELECT email FROM users WHERE receive_dni_emails = true");
+                    masterEmails = [...new Set(recipientsResult.rows
+                        .map(r => r.email?.toLowerCase().trim())
+                        .filter(e => e && e !== normalizedUserEmail))];
+                }
+            } catch (dbErr) {
+                console.warn('Database email fetch failed, using memory fallback:', dbErr.message);
+                const user = inMemoryStore.users.find(u => u.username === usernameForLog);
+                userEmail = user?.email;
+                if (userEmail) {
+                    const normalizedUserEmail = userEmail.toLowerCase().trim();
+                    masterEmails = [...new Set(inMemoryStore.users
+                        .filter(u => u.receive_dni_emails && u.email)
+                        .map(u => u.email.toLowerCase().trim())
+                        .filter(e => e !== normalizedUserEmail))];
+                }
+            }
 
             if (userEmail) {
                 console.log(`E-mail do usuário encontrado: ${userEmail}`);
-                
                 const normalizedUserEmail = userEmail.toLowerCase().trim();
-                
-                // Fetch all Master users to add them in CC
-                const mastersResult = await pool.query("SELECT email FROM users WHERE role = 'master'");
-                const masterEmails = [...new Set(mastersResult.rows
-                    .map(r => r.email?.toLowerCase().trim())
-                    .filter(e => e && e !== normalizedUserEmail))];
 
                 // Handle filename generation for attachment
                 const months = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
@@ -466,11 +483,11 @@ app.get('/api/logs', async (req, res) => {
 // User Management Routes
 app.get('/api/users', async (req, res) => {
     try {
-        const result = await pool.query('SELECT id, username, role, email, created_at FROM users ORDER BY username ASC');
+        const result = await pool.query('SELECT id, username, role, email, created_at, receive_dni_emails FROM users ORDER BY username ASC');
         res.json(result.rows);
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Erro ao buscar usuários' });
+        console.warn('Database GET users failed, using memory fallback:', err.message);
+        res.json(inMemoryStore.users.map(u => ({ id: u.id, username: u.username, role: u.role, email: u.email, created_at: new Date(), receive_dni_emails: u.receive_dni_emails })));
     }
 });
 
@@ -488,7 +505,7 @@ app.get('/api/user-role/:username', async (req, res) => {
 });
 
 app.post('/api/users', async (req, res) => {
-    const { username, role, email } = req.body;
+    const { username, role, email, receiveDniEmails } = req.body;
     const adminUsername = req.headers['x-username'] || 'admin';
     try {
         // Create user with a random temp password
@@ -496,11 +513,21 @@ app.post('/api/users', async (req, res) => {
         const hashedPassword = await bcrypt.hash(tempPassword, 10);
         
         const result = await pool.query(
-            'INSERT INTO users (username, password, role, email) VALUES ($1, $2, $3, $4) RETURNING id',
-            [username, hashedPassword, role || 'user', email]
+            'INSERT INTO users (username, password, role, email, receive_dni_emails) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+            [username, hashedPassword, role || 'user', email, receiveDniEmails || false]
         );
         
         const userId = result.rows[0].id;
+
+        // Sync with inMemoryStore
+        inMemoryStore.users.push({
+            id: userId,
+            username,
+            password: hashedPassword,
+            role: role || 'user',
+            email,
+            receive_dni_emails: receiveDniEmails || false
+        });
 
         // Generate welcome/reset token
         const token = crypto.randomBytes(32).toString('hex');
@@ -550,47 +577,106 @@ app.post('/api/users', async (req, res) => {
         await createLog(adminUsername, 'CREATE', 'USER', username, `Criou usuário ${username} (${role}) e enviou convite para ${email}`);
         res.status(201).json({ success: true });
     } catch (err) {
-        console.error(err);
-        if (err.code === '23505') {
+        console.warn('Database user creation failed, falling back to memory:', err.message);
+        if (inMemoryStore.users.some(u => u.username === username)) {
             return res.status(400).json({ error: 'Usuário já existe' });
         }
-        res.status(500).json({ error: 'Erro ao criar usuário' });
+        inMemoryStore.users.push({
+            id: Date.now(),
+            username,
+            password: '',
+            role: role || 'user',
+            email,
+            receive_dni_emails: receiveDniEmails || false
+        });
+        res.status(201).json({ success: true, message: 'Saved to memory fallback' });
     }
 });
 
 app.delete('/api/users/:id', async (req, res) => {
+    const { id } = req.params;
     try {
         const adminUsername = req.headers['x-username'] || 'admin';
-        await pool.query('DELETE FROM users WHERE id = $1', [req.params.id]);
-        await createLog(adminUsername, 'DELETE', 'USER', req.params.id, 'Excluiu um usuário');
+        await pool.query('DELETE FROM users WHERE id = $1', [id]);
+        inMemoryStore.users = inMemoryStore.users.filter(u => u.id !== parseInt(id, 10));
+        await createLog(adminUsername, 'DELETE', 'USER', id, 'Excluiu um usuário');
         res.json({ success: true });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Erro ao excluir usuário' });
+        console.warn('Database user delete failed, falling back to memory:', err.message);
+        inMemoryStore.users = inMemoryStore.users.filter(u => u.id !== parseInt(id, 10));
+        res.json({ success: true });
     }
 });
 
 app.put('/api/users/:id', async (req, res) => {
-    const { username, password, role, email } = req.body;
+    const { id } = req.params;
+    const { username, password, role, email, receiveDniEmails } = req.body;
     const adminUsername = req.headers['x-username'] || 'admin';
     try {
         if (password && password.trim() !== '') {
             const hashedPassword = await bcrypt.hash(password, 10);
             await pool.query(
-                'UPDATE users SET username = $1, password = $2, role = $3, email = $4 WHERE id = $5',
-                [username, hashedPassword, role, email, req.params.id]
+                'UPDATE users SET username = $1, password = $2, role = $3, email = $4, receive_dni_emails = $5 WHERE id = $6',
+                [username, hashedPassword, role, email, receiveDniEmails || false, id]
             );
+            
+            // Sync with inMemoryStore
+            const user = inMemoryStore.users.find(u => u.id === parseInt(id, 10));
+            if (user) {
+                user.username = username;
+                user.password = hashedPassword;
+                user.role = role;
+                user.email = email;
+                user.receive_dni_emails = receiveDniEmails || false;
+            }
         } else {
             await pool.query(
-                'UPDATE users SET username = $1, role = $2, email = $3 WHERE id = $4',
-                [username, role, email, req.params.id]
+                'UPDATE users SET username = $1, role = $2, email = $3, receive_dni_emails = $4 WHERE id = $5',
+                [username, role, email, receiveDniEmails || false, id]
             );
+            
+            // Sync with inMemoryStore
+            const user = inMemoryStore.users.find(u => u.id === parseInt(id, 10));
+            if (user) {
+                user.username = username;
+                user.role = role;
+                user.email = email;
+                user.receive_dni_emails = receiveDniEmails || false;
+            }
         }
         await createLog(adminUsername, 'UPDATE', 'USER', username, `Editou o usuário ${username}`);
         res.json({ success: true });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Erro ao editar usuário' });
+        console.warn('Database user edit failed, falling back to memory:', err.message);
+        const user = inMemoryStore.users.find(u => u.id === parseInt(id, 10));
+        if (user) {
+            user.username = username;
+            user.role = role;
+            user.email = email;
+            user.receive_dni_emails = receiveDniEmails || false;
+        }
+        res.json({ success: true, message: 'Saved to memory fallback' });
+    }
+});
+
+app.patch('/api/users/:id/toggle-emails', async (req, res) => {
+    const { id } = req.params;
+    const { receiveDniEmails } = req.body;
+    const adminUsername = req.headers['x-username'] || 'admin';
+    try {
+        await pool.query('UPDATE users SET receive_dni_emails = $1 WHERE id = $2', [receiveDniEmails, id]);
+        
+        // Sync with inMemoryStore
+        const user = inMemoryStore.users.find(u => u.id === parseInt(id, 10));
+        if (user) user.receive_dni_emails = receiveDniEmails;
+
+        await createLog(adminUsername, 'UPDATE_PREF', 'USER', id, `Alterou preferência de e-mail de ${id} para ${receiveDniEmails}`);
+        res.json({ success: true });
+    } catch (err) {
+        console.warn('Database toggle failed, using memory fallback:', err.message);
+        const user = inMemoryStore.users.find(u => u.id === parseInt(id, 10));
+        if (user) user.receive_dni_emails = receiveDniEmails;
+        res.json({ success: true });
     }
 });
 
