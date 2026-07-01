@@ -58,6 +58,60 @@ export const DeclarationForm: React.FC<Props> = ({
   const [step, setStep] = useState(1);
   const [isSearchingCep, setIsSearchingCep] = useState(false);
   const [isSearchingCnpj, setIsSearchingCnpj] = useState(false);
+  const [showValidation, setShowValidation] = useState(false);
+
+  const getStep1Errors = () => {
+    const errors: Record<string, string> = {};
+    
+    if (!requestNumber || requestNumber.trim().length <= 5) {
+      errors.requestNumber = 'RITM deve conter mais de 5 caracteres';
+    }
+    if (!employeeEmail || employeeEmail.trim().length <= 5 || !employeeEmail.includes('@')) {
+      errors.employeeEmail = 'E-mail corporativo inválido';
+    }
+    if (!sender.name || sender.name.trim().length <= 3) {
+      errors.senderName = 'Nome deve conter mais de 3 caracteres';
+    }
+    
+    const isGEHealthCare = sender.companyName?.trim() === 'GE HealthCare';
+    const hasCpf = sender.cpf && sender.cpf.replace(/\D/g, '').length === 11;
+    const hasCnpj = sender.cnpj && sender.cnpj.replace(/\D/g, '').length === 14;
+    
+    if (!isGEHealthCare && !hasCpf && !hasCnpj) {
+      if (sender.cpf && sender.cpf.replace(/\D/g, '').length > 0) {
+        errors.senderCpf = 'CPF deve conter 11 dígitos';
+      } else if (sender.cnpj && sender.cnpj.replace(/\D/g, '').length > 0) {
+        errors.senderCnpj = 'CNPJ deve conter 14 dígitos';
+      } else {
+        errors.senderCpf = 'Preencha CPF ou CNPJ';
+        errors.senderCnpj = 'Preencha CPF ou CNPJ';
+      }
+    }
+    
+    if (!sender.address || sender.address.trim().length <= 5) {
+      errors.senderAddress = 'Endereço deve conter mais de 5 caracteres';
+    }
+    if (!sender.number || sender.number.trim().length === 0) {
+      errors.senderNumber = 'Número obrigatório';
+    }
+    if (!sender.bairro || sender.bairro.trim().length <= 2) {
+      errors.senderBairro = 'Bairro inválido';
+    }
+    if (!sender.city || sender.city.trim().length <= 2) {
+      errors.senderCity = 'Município inválido';
+    }
+    if (!sender.state || sender.state.trim().length !== 2) {
+      errors.senderState = 'Estado inválido';
+    }
+    if (!sender.zipCode || sender.zipCode.replace(/\D/g, '').length !== 8) {
+      errors.senderZipCode = 'CEP deve conter 8 dígitos';
+    }
+    if (!sender.phone || sender.phone.replace(/\D/g, '').length < 10) {
+      errors.senderPhone = 'Telefone inválido';
+    }
+    
+    return errors;
+  };
 
   const formatCPF = (value: string) => {
     const raw = value.replace(/\D/g, '').slice(0, 11);
@@ -258,6 +312,30 @@ export const DeclarationForm: React.FC<Props> = ({
     return false;
   };
 
+  const handleNext = () => {
+    if (step === 1) {
+      if (isStep1Valid()) {
+        setStep(2);
+        setShowValidation(false);
+      } else {
+        setShowValidation(true);
+        showNotification('Campos Obrigatórios', 'Por favor, preencha corretamente todos os campos destacados em vermelho.', 'error');
+      }
+    } else if (step === 2) {
+      if (isStep2Valid()) {
+        setStep(3);
+        setShowValidation(false);
+      } else {
+        showNotification('Itens Inválidos', 'Certifique-se de que todos os itens possuem Descrição, Nº Série e Valor Unitário preenchidos.', 'error');
+      }
+    } else if (step === 3) {
+      if (isStep3Valid()) {
+        setStep(4);
+        setShowValidation(false);
+      }
+    }
+  };
+
   const handleClear = () => {
     showNotification(
       'Limpar Formulário',
@@ -288,6 +366,7 @@ export const DeclarationForm: React.FC<Props> = ({
   const isCpfFilled = sender.cpf && sender.cpf.replace(/\D/g, '').length === 11;
   const isCnpjFilled = sender.cnpj && sender.cnpj.replace(/\D/g, '').length === 14;
   const isGEHealthCare = sender.companyName?.trim() === 'GE HealthCare';
+  const step1Errors = showValidation ? getStep1Errors() : {};
 
   return (
     <div className="p-6 md:p-10 space-y-10">
@@ -339,16 +418,17 @@ export const DeclarationForm: React.FC<Props> = ({
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              <FormField label="Nº Chamado (RITM) *" value={requestNumber || ''} onChange={(v) => onUpdate({ requestNumber: v })} placeholder="RITM0000000" />
-              <FormField label="E-mail Solicitante *" value={employeeEmail || ''} onChange={(v) => onUpdate({ employeeEmail: v })} placeholder="usuario@ctdi.com" />
+              <FormField label="Nº Chamado (RITM) *" value={requestNumber || ''} onChange={(v) => onUpdate({ requestNumber: v })} placeholder="RITM0000000" error={step1Errors.requestNumber} />
+              <FormField label="E-mail Solicitante *" value={employeeEmail || ''} onChange={(v) => onUpdate({ employeeEmail: v })} placeholder="usuario@ctdi.com" error={step1Errors.employeeEmail} />
               <div className="lg:col-span-2">
-                <FormField label="Nome Completo *" value={sender.name} onChange={(v) => onUpdate({ sender: { ...sender, name: v } })} />
+                <FormField label="Nome Completo *" value={sender.name} onChange={(v) => onUpdate({ sender: { ...sender, name: v } })} error={step1Errors.senderName} />
               </div>
               <FormField
                 label={`CPF ${(isCnpjFilled || isGEHealthCare) ? '' : '*'}`}
                 value={sender.cpf}
                 onChange={(v) => onUpdate({ sender: { ...sender, cpf: formatCPF(v) } })}
                 placeholder="000.000.000-00"
+                error={step1Errors.senderCpf}
               />
               <div className="relative">
                 <FormField
@@ -360,6 +440,7 @@ export const DeclarationForm: React.FC<Props> = ({
                     if (formatted.replace(/\D/g, '').length === 14) handleCnpjSearch(formatted);
                   }}
                   placeholder="00.000.000/0000-00"
+                  error={step1Errors.senderCnpj}
                 />
                 {isSearchingCnpj && (
                   <div className="absolute right-3 top-9 text-zinc-400">
@@ -384,6 +465,7 @@ export const DeclarationForm: React.FC<Props> = ({
                     if (formatted.replace(/\D/g, '').length === 8) handleCepSearch(formatted);
                   }}
                   placeholder="00000-000"
+                  error={step1Errors.senderZipCode}
                 />
                 {isSearchingCep && (
                   <div className="absolute right-3 top-9 text-zinc-400">
@@ -393,18 +475,19 @@ export const DeclarationForm: React.FC<Props> = ({
               </div>
 
               <div className="md:col-span-2 lg:col-span-2">
-                <FormField label="Endereço Completo *" value={sender.address} onChange={(v) => onUpdate({ sender: { ...sender, address: v } })} />
+                <FormField label="Endereço Completo *" value={sender.address} onChange={(v) => onUpdate({ sender: { ...sender, address: v } })} error={step1Errors.senderAddress} />
               </div>
-              <FormField label="Número *" value={sender.number} onChange={(v) => onUpdate({ sender: { ...sender, number: v } })} />
+              <FormField label="Número *" value={sender.number} onChange={(v) => onUpdate({ sender: { ...sender, number: v } })} error={step1Errors.senderNumber} />
 
-              <FormField label="Bairro *" value={sender.bairro} onChange={(v) => onUpdate({ sender: { ...sender, bairro: v } })} />
-              <FormField label="Município *" value={sender.city} onChange={(v) => onUpdate({ sender: { ...sender, city: v } })} />
-              <FormField label="Estado *" value={sender.state} onChange={(v) => onUpdate({ sender: { ...sender, state: v } })} />
+              <FormField label="Bairro *" value={sender.bairro} onChange={(v) => onUpdate({ sender: { ...sender, bairro: v } })} error={step1Errors.senderBairro} />
+              <FormField label="Município *" value={sender.city} onChange={(v) => onUpdate({ sender: { ...sender, city: v } })} error={step1Errors.senderCity} />
+              <FormField label="Estado *" value={sender.state} onChange={(v) => onUpdate({ sender: { ...sender, state: v } })} error={step1Errors.senderState} />
               <FormField
                 label="Telefone *"
                 value={sender.phone}
                 onChange={(v) => onUpdate({ sender: { ...sender, phone: formatPhone(v) } })}
                 placeholder="(00) 00000-0000"
+                error={step1Errors.senderPhone}
               />
               <FormField label="Contato" value={sender.contact || ''} onChange={(v) => onUpdate({ sender: { ...sender, contact: v } })} />
               <FormField label="Empresa (Remetente)" value={sender.companyName || ''} onChange={(v) => onUpdate({ sender: { ...sender, companyName: v } })} />
@@ -545,9 +628,8 @@ export const DeclarationForm: React.FC<Props> = ({
 
         {step < 4 ? (
           <button
-            onClick={() => setStep(step + 1)}
-            disabled={!canNavigateTo(step + 1)}
-            className={`flex items-center gap-2 px-8 py-4 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all shadow-md active:scale-95 ${canNavigateTo(step + 1) ? 'bg-[#0078d4] text-white hover:bg-blue-700' : 'bg-zinc-100 text-zinc-300 cursor-not-allowed shadow-none'}`}
+            onClick={handleNext}
+            className="flex items-center gap-2 px-8 py-4 bg-[#0078d4] text-white hover:bg-blue-700 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all shadow-md active:scale-95"
           >
             Próximo Passo <ChevronRightIcon className="w-4 h-4" />
           </button>
@@ -564,15 +646,18 @@ export const DeclarationForm: React.FC<Props> = ({
   );
 };
 
-const FormField: React.FC<{ label: string; value: string; onChange: (v: string) => void; type?: string; placeholder?: string }> = ({ label, value, onChange, type = "text", placeholder }) => (
+const FormField: React.FC<{ label: string; value: string; onChange: (v: string) => void; type?: string; placeholder?: string; error?: string }> = ({ label, value, onChange, type = "text", placeholder, error }) => (
   <div className="w-full">
-    <label className="block text-[10px] font-bold text-zinc-500 uppercase mb-2 ml-1 tracking-wider">{label}</label>
+    <label className={`block text-[10px] font-bold uppercase mb-2 ml-1 tracking-wider ${error ? 'text-red-500' : 'text-zinc-500'}`}>{label}</label>
     <input
       type={type}
       placeholder={placeholder}
-      className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl text-xs focus:ring-1 focus:ring-[#0078d4] focus:border-[#0078d4] outline-none transition-all hover:border-zinc-300 font-medium"
+      className={`w-full px-4 py-2.5 rounded-xl text-xs outline-none transition-all font-medium ${error ? 'border-2 border-red-400 bg-red-50/10 focus:ring-1 focus:ring-red-400 focus:border-red-400' : 'bg-zinc-50 border border-zinc-200 focus:ring-1 focus:ring-[#0078d4] focus:border-[#0078d4] hover:border-zinc-300'}`}
       value={value}
       onChange={(e) => onChange(e.target.value)}
     />
+    {error && (
+      <span className="text-[9px] text-red-500 mt-1.5 font-bold uppercase tracking-tight ml-1 block animate-in fade-in duration-200">{error}</span>
+    )}
   </div>
 );
