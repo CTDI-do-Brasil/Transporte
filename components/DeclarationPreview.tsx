@@ -124,7 +124,9 @@ export const DeclarationPreview: React.FC<Props> = ({ declaration, onSignatureCl
           <div className="text-[9pt] uppercase font-bold text-black">Assinatura do Remetente</div>
           <div className="text-[9pt] font-bold text-black mt-3 flex items-baseline gap-1 w-full justify-center">
             <span>CPF:</span>
-            <span className="border-b border-dotted border-black w-48 inline-block text-center font-mono text-[9pt] h-[14px] leading-tight"></span>
+            <span className="border-b border-dotted border-black w-48 inline-block text-center font-mono text-[9pt] h-[14px] leading-tight">
+              {declaration.sender.companyName?.toLowerCase().includes('ge vernova') ? (declaration.sender.cpf || '') : ''}
+            </span>
           </div>
         </div>
 
