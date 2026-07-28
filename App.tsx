@@ -622,8 +622,10 @@ const App: React.FC = () => {
             <div className={`bg-white border border-zinc-200 rounded-[2.5rem] ${view === 'reset-password' ? 'p-6' : 'p-10'} shadow-2xl relative overflow-hidden group`}>
               <div className="absolute -top-24 -right-24 w-48 h-48 bg-zinc-100 rounded-full blur-3xl group-hover:bg-zinc-200 transition-colors"></div>
 
-              <header className="mb-10 text-center flex flex-col items-center">
-                 <img src="/LOGOS/LogoPrincipal.png" alt="DNIGen" className="h-24 w-auto mb-4" />
+              <header className="mb-10 text-center flex flex-row items-center justify-center gap-6">
+                 <img src="/LOGOS/LogoPrincipal.png" alt="DNIGen" className="h-20 w-auto" />
+                 <div className="h-12 w-px bg-zinc-200"></div>
+                 <img src="/LOGOS/LogoCTDI.png" alt="CTDI" className="h-10 w-auto" />
               </header>
 
               {view === 'forgot-password' ? (
