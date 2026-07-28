@@ -91,6 +91,13 @@ try {
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token VARCHAR(255)');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expiry TIMESTAMP');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_dni_emails BOOLEAN DEFAULT FALSE');
+    
+    // Add unique constraint for declaration number
+    try {
+        await pool.query('ALTER TABLE declarations ADD CONSTRAINT unique_declaration_number UNIQUE (number)');
+    } catch (constraintErr) {
+        console.warn('Could not add UNIQUE constraint (duplicates may already exist):', constraintErr.message);
+    }
 } catch (err) {
     console.warn('Could not ensure columns:', err.message);
 }
@@ -208,6 +215,30 @@ app.get('/api/setup-audit', async (req, res) => {
 });
 
 // Routes
+app.get('/api/declarations/next-number', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT number FROM declarations ORDER BY number DESC LIMIT 1');
+        let nextNum = 21525; // default fallback if empty
+        if (result.rows.length > 0) {
+            const lastNum = parseInt(result.rows[0].number, 10);
+            if (!isNaN(lastNum)) {
+                nextNum = lastNum + 1;
+            }
+        }
+        res.json({ nextNumber: nextNum });
+    } catch (err) {
+        console.warn('Database next number fetch failed, using memory fallback:', err.message);
+        let nextNum = 21525;
+        if (inMemoryStore.declarations.length > 0) {
+            const numbers = inMemoryStore.declarations.map(d => parseInt(d.number, 10)).filter(n => !isNaN(n));
+            if (numbers.length > 0) {
+                nextNum = Math.max(...numbers) + 1;
+            }
+        }
+        res.json({ nextNumber: nextNum });
+    }
+});
+
 app.get('/api/declarations', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM declarations ORDER BY created_at DESC');
@@ -440,6 +471,10 @@ app.post('/api/declarations', async (req, res) => {
 
         res.status(201).json({ success: true });
     } catch (err) {
+        if (err.code === '23505') {
+            console.warn('Duplicate declaration number detected:', number);
+            return res.status(409).json({ error: 'duplicate_number', message: 'Número de declaração já existe.' });
+        }
         console.warn('Database POST failed, using memory fallback:', err.message);
         // Fallback save
         const fallbackDecl = {

@@ -450,53 +450,73 @@ const App: React.FC = () => {
   };
 
   const handleGenerate = async (data: Partial<Declaration>) => {
-    const nextNum = currentNumber + 1;
-    const formattedNum = nextNum.toString().padStart(8, '0');
-
-    const newDeclHost: Declaration = {
-      id: crypto.randomUUID(),
-      number: formattedNum,
-      date: new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }).toUpperCase(),
-      city: 'CAMPINAS',
-      recipient: data.recipient || INITIAL_RECIPIENT,
-      equipment: data.equipment || INITIAL_EQUIPMENT,
-      sender: data.sender || INITIAL_SENDER,
-      carrier: data.carrier || INITIAL_CARRIER,
-      requestNumber: data.requestNumber,
-      shipToAddressTo: data.shipToAddressTo,
-      employeeEmail: data.employeeEmail,
-      deliveryDate: data.deliveryDate,
-      requestType: data.requestType,
-      priority: data.priority,
-      legalHold: data.legalHold
-    };
-
     setIsLoading(true);
-    try {
+    let attempts = 0;
+    const maxAttempts = 3;
+
+    const tryGenerate = async (): Promise<boolean> => {
+      attempts++;
+      let nextNum = currentNumber + 1;
+
+      try {
+        const numRes = await fetch(`${API_URL}/declarations/next-number`);
+        if (numRes.ok) {
+          const numData = await numRes.json();
+          if (numData.nextNumber) {
+            nextNum = numData.nextNumber;
+          }
+        }
+      } catch (numErr) {
+        console.error('Error fetching next number from server, using fallback:', numErr);
+      }
+
+      const formattedNum = nextNum.toString().padStart(8, '0');
+
+      const newDeclHost: Declaration = {
+        id: crypto.randomUUID(),
+        number: formattedNum,
+        date: new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }).toUpperCase(),
+        city: 'CAMPINAS',
+        recipient: data.recipient || INITIAL_RECIPIENT,
+        equipment: data.equipment || INITIAL_EQUIPMENT,
+        sender: data.sender || INITIAL_SENDER,
+        carrier: data.carrier || INITIAL_CARRIER,
+        requestNumber: data.requestNumber,
+        shipToAddressTo: data.shipToAddressTo,
+        employeeEmail: data.employeeEmail,
+        deliveryDate: data.deliveryDate,
+        requestType: data.requestType,
+        priority: data.priority,
+        legalHold: data.legalHold
+      };
+
       setActiveDeclaration(newDeclHost);
       setView('preview');
 
-      setTimeout(async () => {
-        const element = document.getElementById('declaration-content');
-        let pdfBase64 = null;
+      // Wait for DOM to render view and A4 content
+      await new Promise(resolve => setTimeout(resolve, 800));
 
-        if (element) {
-          const opt = {
-            margin: 0,
-            filename: generateFilename(newDeclHost),
-            image: { type: 'jpeg', quality: 0.98 },
-            html2canvas: { scale: 2, useCORS: true, letterRendering: true },
-            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
-          };
+      const element = document.getElementById('declaration-content');
+      let pdfBase64 = null;
 
-          try {
-            // @ts-ignore
-            pdfBase64 = await html2pdf().set(opt).from(element).output('datauristring');
-          } catch (pdfErr) {
-            console.error('Error generating PDF for email:', pdfErr);
-          }
+      if (element) {
+        const opt = {
+          margin: 0,
+          filename: generateFilename(newDeclHost),
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: { scale: 2, useCORS: true, letterRendering: true },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        };
+
+        try {
+          // @ts-ignore
+          pdfBase64 = await html2pdf().set(opt).from(element).output('datauristring');
+        } catch (pdfErr) {
+          console.error('Error generating PDF for email:', pdfErr);
         }
+      }
 
+      try {
         const response = await fetch(`${API_URL}/declarations`, {
           method: 'POST',
           headers: {
@@ -506,19 +526,39 @@ const App: React.FC = () => {
           body: JSON.stringify({ ...newDeclHost, pdfBase64 })
         });
 
+        if (response.status === 409) {
+          const errData = await response.json();
+          if (errData.error === 'duplicate_number') {
+            if (attempts < maxAttempts) {
+              console.warn(`Duplicate number detected (${formattedNum}), retrying attempt ${attempts + 1}...`);
+              setCurrentNumber(nextNum);
+              return await tryGenerate();
+            } else {
+              showNotification('Erro de Duplicidade', 'Não foi possível gerar um número único após várias tentativas. Tente novamente.', 'error');
+              return false;
+            }
+          }
+        }
+
         if (response.ok) {
           setHistory([newDeclHost, ...history]);
           setCurrentNumber(nextNum);
           showNotification('Sucesso', 'Documento gerado, salvo e enviado por e-mail com sucesso!', 'success');
+          return true;
         } else {
           showNotification('Atenção', 'Documento gerado, mas houve um erro ao enviar para o servidor.', 'error');
+          return false;
         }
-        setIsLoading(false);
-      }, 1000);
+      } catch (error) {
+        console.error('Error saving declaration:', error);
+        showNotification('Erro', 'Não foi possível salvar a declaração.', 'error');
+        return false;
+      }
+    };
 
-    } catch (error) {
-      console.error('Error saving declaration:', error);
-      showNotification('Erro', 'Houve um problema ao gerar o documento.', 'error');
+    try {
+      await tryGenerate();
+    } finally {
       setIsLoading(false);
     }
   };
