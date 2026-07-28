@@ -790,8 +790,10 @@ const App: React.FC = () => {
         <div className="h-screen flex flex-col bg-zinc-50 overflow-hidden font-['Segoe_UI']">
           {/* Header Minimalista */}
           <header className="no-print h-20 bg-white border-b border-zinc-200 flex items-center justify-between px-8 z-50 shrink-0 shadow-sm">
-            <div className="flex items-center">
-               <img src="/LOGOS/LogoPrincipal.png" alt="DNIGen" className="h-14 w-auto" />
+            <div className="flex items-center gap-4">
+               <img src="/LOGOS/LogoCTDI.png" alt="CTDI" className="h-8 w-auto" />
+               <div className="h-8 w-px bg-zinc-200"></div>
+               <img src="/LOGOS/LogoPrincipal.png" alt="DNIGen" className="h-12 w-auto" />
             </div>
 
             <button
