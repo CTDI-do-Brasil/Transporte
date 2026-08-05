@@ -217,7 +217,7 @@ app.get('/api/setup-audit', async (req, res) => {
 // Routes
 app.get('/api/declarations/next-number', async (req, res) => {
     try {
-        const result = await pool.query('SELECT number FROM declarations ORDER BY number DESC LIMIT 1');
+        const result = await pool.query("SELECT number FROM declarations WHERE number ~ '^[0-9]+$' ORDER BY CAST(number AS INTEGER) DESC LIMIT 1");
         let nextNum = 21525; // default fallback if empty
         if (result.rows.length > 0) {
             const lastNum = parseInt(result.rows[0].number, 10);
@@ -297,6 +297,13 @@ app.post('/api/declarations', async (req, res) => {
     };
 
     try {
+        // Prevent duplicate numbers if a different ID is trying to use the same number
+        const dupCheck = await pool.query('SELECT id FROM declarations WHERE number = $1 AND id <> $2', [number, id]);
+        if (dupCheck.rows.length > 0) {
+            console.warn('Duplicate declaration number detected:', number);
+            return res.status(409).json({ error: 'duplicate_number', message: 'Número de declaração já existe.' });
+        }
+
         await pool.query(
             `INSERT INTO declarations (
                 id, number, date, city, recipient, equipment, sender, carrier, 
