@@ -17,7 +17,8 @@ export const ConsultationView: React.FC<Props> = ({ history, onSelect, onDelete,
     d.number.includes(searchTerm) ||
     (d.requestNumber && d.requestNumber.toLowerCase().includes(searchTerm.toLowerCase())) ||
     d.sender.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    d.carrier.companyName.toLowerCase().includes(searchTerm.toLowerCase())
+    d.carrier.companyName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (d.equipment && d.equipment.some(item => item.serialNumber && item.serialNumber.toLowerCase().includes(searchTerm.toLowerCase())))
   );
 
   return (
@@ -31,7 +32,7 @@ export const ConsultationView: React.FC<Props> = ({ history, onSelect, onDelete,
           <SearchIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400 w-5 h-5" />
           <input
             type="text"
-            placeholder="Buscar por Nº, RITM ou Nome..."
+            placeholder="Buscar por Nº, RITM/HARRL, Série ou Nome..."
             className="w-full pl-12 pr-4 py-3.5 bg-white border border-zinc-200 rounded-2xl shadow-sm focus:ring-2 focus:ring-[#0078d4]/10 focus:border-[#0078d4] outline-none transition-all font-medium"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
