@@ -922,6 +922,7 @@ const App: React.FC = () => {
                           onClick={handleEdit}
                           title="Editar Dados"
                           variant="secondary"
+                          disabled={isLoading}
                         />
                       )}
                       <ActionButton
@@ -929,18 +930,21 @@ const App: React.FC = () => {
                         onClick={handleResendEmail}
                         title="Reenviar E-mail"
                         variant="secondary"
+                        disabled={isLoading}
                       />
                       <ActionButton
                         icon={<PrinterIcon className="w-5 h-5" />}
                         onClick={handlePrint}
                         title="Imprimir"
                         variant="secondary"
+                        disabled={isLoading}
                       />
                       <ActionButton
                         icon={<DownloadIcon className="w-5 h-5" />}
                         onClick={handleDownloadPDF}
                         title="Baixar PDF"
                         variant="primary"
+                        disabled={isLoading}
                       />
                     </div>
                   </div>
@@ -998,11 +1002,12 @@ const SidebarItem: React.FC<{ icon: React.ReactNode; label: string; active: bool
   </button>
 );
 
-const ActionButton: React.FC<{ icon: React.ReactNode; onClick: () => void; title: string; variant: 'primary' | 'secondary' }> = ({ icon, onClick, title, variant }) => (
+const ActionButton: React.FC<{ icon: React.ReactNode; onClick: () => void; title: string; variant: 'primary' | 'secondary'; disabled?: boolean }> = ({ icon, onClick, title, variant, disabled }) => (
   <button
     onClick={onClick}
+    disabled={disabled}
     title={title}
-    className={`p-4 rounded-2xl shadow-2xl transition-all active:scale-90 flex items-center justify-center ${variant === 'primary' ? 'bg-zinc-900 text-white hover:bg-zinc-800' : 'bg-white text-zinc-900 border border-zinc-200 hover:bg-zinc-50'}`}
+    className={`p-4 rounded-2xl shadow-2xl transition-all active:scale-90 flex items-center justify-center ${disabled ? 'opacity-40 cursor-not-allowed pointer-events-none' : ''} ${variant === 'primary' ? 'bg-zinc-900 text-white hover:bg-zinc-800' : 'bg-white text-zinc-900 border border-zinc-200 hover:bg-zinc-50'}`}
   >
     {icon}
   </button>

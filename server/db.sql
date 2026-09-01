@@ -1,7 +1,10 @@
+-- Create sequence for atomic declaration numbers
+CREATE SEQUENCE IF NOT EXISTS declaration_number_seq START WITH 21525;
+
 -- Create declarations table
 CREATE TABLE IF NOT EXISTS declarations (
     id UUID PRIMARY KEY,
-    number VARCHAR(20) NOT NULL,
+    number VARCHAR(20) UNIQUE NOT NULL,
     date VARCHAR(100) NOT NULL,
     city VARCHAR(100) NOT NULL,
     recipient JSONB NOT NULL,

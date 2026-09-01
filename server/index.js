@@ -77,7 +77,7 @@ const pool = new pg.Pool({
         ? false : { rejectUnauthorized: false }
 });
 
-// Ensure request_number and extra metadata columns exist
+// Ensure request_number, extra metadata columns, and atomic sequence exist
 try {
     await pool.query('ALTER TABLE declarations ADD COLUMN IF NOT EXISTS request_number VARCHAR(50)');
     await pool.query('ALTER TABLE declarations ADD COLUMN IF NOT EXISTS ship_to_address_to VARCHAR(255)');
@@ -92,14 +92,61 @@ try {
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expiry TIMESTAMP');
     await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_dni_emails BOOLEAN DEFAULT FALSE');
     
-    // Add unique constraint for declaration number
+    // Atomic sequence for declaration numbers
+    await pool.query('CREATE SEQUENCE IF NOT EXISTS declaration_number_seq');
+
+    // Sync sequence with the current highest number
+    await pool.query(`
+        DO $$
+        DECLARE
+            max_num INTEGER;
+            curr_seq BIGINT;
+        BEGIN
+            SELECT COALESCE(MAX(CAST(number AS INTEGER)), 21524) INTO max_num
+            FROM declarations
+            WHERE number ~ '^[0-9]+$';
+
+            SELECT last_value INTO curr_seq FROM declaration_number_seq;
+
+            IF curr_seq IS NULL OR curr_seq <= max_num THEN
+                PERFORM setval('declaration_number_seq', max_num, true);
+            END IF;
+        END $$;
+    `);
+
+    // Resolve any historical duplicates before applying UNIQUE constraint
+    await pool.query(`
+        DO $$
+        DECLARE
+            r RECORD;
+            new_num BIGINT;
+            formatted_new_num VARCHAR(20);
+        BEGIN
+            FOR r IN 
+                SELECT id, number, created_at, 
+                       ROW_NUMBER() OVER (PARTITION BY number ORDER BY created_at ASC) as rn
+                FROM declarations
+                WHERE number IS NOT NULL
+            LOOP
+                IF r.rn > 1 THEN
+                    SELECT nextval('declaration_number_seq') INTO new_num;
+                    formatted_new_num := LPAD(new_num::TEXT, 8, '0');
+                    UPDATE declarations SET number = formatted_new_num WHERE id = r.id;
+                END IF;
+            END LOOP;
+        END $$;
+    `);
+
+    // Apply strict UNIQUE constraint on declaration number
     try {
         await pool.query('ALTER TABLE declarations ADD CONSTRAINT unique_declaration_number UNIQUE (number)');
     } catch (constraintErr) {
-        console.warn('Could not add UNIQUE constraint (duplicates may already exist):', constraintErr.message);
+        if (!constraintErr.message.includes('already exists')) {
+            console.warn('Could not add UNIQUE constraint:', constraintErr.message);
+        }
     }
 } catch (err) {
-    console.warn('Could not ensure columns:', err.message);
+    console.warn('Could not ensure columns/sequence:', err.message);
 }
 
 // Email Transporter Configuration
@@ -217,25 +264,32 @@ app.get('/api/setup-audit', async (req, res) => {
 // Routes
 app.get('/api/declarations/next-number', async (req, res) => {
     try {
-        const result = await pool.query("SELECT number FROM declarations WHERE number ~ '^[0-9]+$' ORDER BY CAST(number AS INTEGER) DESC LIMIT 1");
-        let nextNum = 21525; // default fallback if empty
-        if (result.rows.length > 0) {
-            const lastNum = parseInt(result.rows[0].number, 10);
-            if (!isNaN(lastNum)) {
-                nextNum = lastNum + 1;
-            }
-        }
+        const result = await pool.query("SELECT nextval('declaration_number_seq') AS next_num");
+        const nextNum = parseInt(result.rows[0].next_num, 10);
         res.json({ nextNumber: nextNum });
     } catch (err) {
-        console.warn('Database next number fetch failed, using memory fallback:', err.message);
-        let nextNum = 21525;
-        if (inMemoryStore.declarations.length > 0) {
-            const numbers = inMemoryStore.declarations.map(d => parseInt(d.number, 10)).filter(n => !isNaN(n));
-            if (numbers.length > 0) {
-                nextNum = Math.max(...numbers) + 1;
+        console.warn('Database nextval failed, using fallback query:', err.message);
+        try {
+            const result = await pool.query("SELECT number FROM declarations WHERE number ~ '^[0-9]+$' ORDER BY CAST(number AS INTEGER) DESC LIMIT 1");
+            let nextNum = 21525; // default fallback if empty
+            if (result.rows.length > 0) {
+                const lastNum = parseInt(result.rows[0].number, 10);
+                if (!isNaN(lastNum)) {
+                    nextNum = lastNum + 1;
+                }
             }
+            res.json({ nextNumber: nextNum });
+        } catch (tableErr) {
+            console.warn('Database next number fetch failed, using memory fallback:', tableErr.message);
+            let nextNum = 21525;
+            if (inMemoryStore.declarations.length > 0) {
+                const numbers = inMemoryStore.declarations.map(d => parseInt(d.number, 10)).filter(n => !isNaN(n));
+                if (numbers.length > 0) {
+                    nextNum = Math.max(...numbers) + 1;
+                }
+            }
+            res.json({ nextNumber: nextNum });
         }
-        res.json({ nextNumber: nextNum });
     }
 });
 
@@ -466,6 +520,24 @@ app.post('/api/declarations', async (req, res) => {
                 port: process.env.SMTP_PORT || '587',
                 user: process.env.SMTP_USER
             });
+        }
+
+        // Keep PostgreSQL sequence in sync with inserted numbers
+        if (/^\d+$/.test(number)) {
+            const numInt = parseInt(number, 10);
+            try {
+                await pool.query(`
+                    DO $$
+                    DECLARE
+                        curr_seq BIGINT;
+                    BEGIN
+                        SELECT last_value INTO curr_seq FROM declaration_number_seq;
+                        IF curr_seq IS NULL OR curr_seq < ${numInt} THEN
+                            PERFORM setval('declaration_number_seq', ${numInt}, true);
+                        END IF;
+                    END $$;
+                `);
+            } catch (seqErr) {}
         }
 
         // Also keep inMemoryStore in sync
