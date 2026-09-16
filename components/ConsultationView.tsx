@@ -1,16 +1,17 @@
 
 import React, { useState } from 'react';
 import { Declaration } from '../types';
-import { SearchIcon, EyeIcon, Trash2Icon, FilterIcon, CalendarIcon, CheckCircle2Icon, AlertCircleIcon } from 'lucide-react';
+import { SearchIcon, EyeIcon, Trash2Icon, FilterIcon, CalendarIcon, CheckCircle2Icon, AlertCircleIcon, Edit2Icon } from 'lucide-react';
 
 interface Props {
   history: Declaration[];
   onSelect: (d: Declaration) => void;
+  onEdit?: (d: Declaration) => void;
   onDelete: (id: string) => void;
   userRole: 'master' | 'user' | null;
 }
 
-export const ConsultationView: React.FC<Props> = ({ history, onSelect, onDelete, userRole }) => {
+export const ConsultationView: React.FC<Props> = ({ history, onSelect, onEdit, onDelete, userRole }) => {
   const [searchTerm, setSearchTerm] = useState('');
 
   const filtered = history.filter(d =>
@@ -95,6 +96,15 @@ export const ConsultationView: React.FC<Props> = ({ history, onSelect, onDelete,
                         >
                           <EyeIcon className="w-5 h-5" />
                         </button>
+                        {onEdit && (
+                          <button
+                            onClick={() => onEdit(d)}
+                            className="p-3 bg-white hover:bg-zinc-950 text-zinc-600 hover:text-white rounded-xl shadow-sm border border-zinc-200 transition-all font-bold text-xs"
+                            title="Editar"
+                          >
+                            <Edit2Icon className="w-5 h-5" />
+                          </button>
+                        )}
                         {userRole === 'master' && (
                           <button
                             onClick={() => onDelete(d.id)}

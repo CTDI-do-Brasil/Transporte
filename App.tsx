@@ -899,6 +899,7 @@ const App: React.FC = () => {
                   <ConsultationView
                     history={history}
                     onSelect={(d) => { setActiveDeclaration(d); setView('preview'); }}
+                    onEdit={(d) => { setActiveDeclaration(d); setView('edit'); }}
                     onDelete={deleteFromHistory}
                     userRole={userRole}
                   />
@@ -916,15 +917,13 @@ const App: React.FC = () => {
 
                     {/* Botões Flutuantes Premium */}
                     <div className="no-print fixed bottom-12 right-12 flex flex-col gap-4 z-50">
-                      {userRole === 'master' && (
-                        <ActionButton
-                          icon={<Edit2Icon className="w-5 h-5" />}
-                          onClick={handleEdit}
-                          title="Editar Dados"
-                          variant="secondary"
-                          disabled={isLoading}
-                        />
-                      )}
+                      <ActionButton
+                        icon={<Edit2Icon className="w-5 h-5" />}
+                        onClick={handleEdit}
+                        title="Editar Dados"
+                        variant="secondary"
+                        disabled={isLoading}
+                      />
                       <ActionButton
                         icon={<MailIcon className="w-5 h-5" />}
                         onClick={handleResendEmail}
