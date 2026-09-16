@@ -31,6 +31,9 @@ bcrypt.hash('admin123', 10).then(hash => {
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Confia no proxy reverso (Nginx, CapRover, Docker) para identificar o IP real do cliente
+app.set('trust proxy', 1);
+
 // Middleware
 app.use(helmet({
     contentSecurityPolicy: false, // For easier dev, can be tightened later
@@ -42,17 +45,21 @@ app.use(express.json({ limit: '50mb' }));
 // Global Rate Limiter
 const globalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    limit: 100,
+    limit: Number(process.env.RATE_LIMIT_MAX) || 1500,
     message: { error: 'Muitas requisições deste IP, tente novamente em 15 minutos.' },
     standardHeaders: true,
     legacyHeaders: false,
+    skip: (req) => {
+        // Ignora rate limit em ambiente de desenvolvimento local
+        return process.env.NODE_ENV !== 'production' && (req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1');
+    }
 });
 app.use(globalLimiter);
 
 // Strict Rate Limiter for Auth/Email
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    limit: 10, // 10 attempts allowed
+    limit: Number(process.env.AUTH_RATE_LIMIT_MAX) || 30, // 30 attempts allowed
     message: { error: 'Limite de tentativas atingido. Tente novamente em 15 minutos.' },
     standardHeaders: true,
     legacyHeaders: false,
@@ -192,7 +199,7 @@ const createLog = async (username, action, entity, entityId, details) => {
 
 // Auth Route
 app.use('/api/forgot-password', authLimiter);
-app.use('/api/users', authLimiter);
+app.use('/api/reset-password', authLimiter);
 app.post('/api/login', authLimiter, async (req, res) => {
     const { username, password } = req.body;
     try {
