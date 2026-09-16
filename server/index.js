@@ -75,6 +75,22 @@ const escapeHtml = (unsafe) => {
         .replace(/'/g, "&#039;");
 };
 
+// Header username decoder (handles UTF-8 & URL encoding)
+const parseUsernameHeader = (headerValue, defaultVal = 'desconhecido') => {
+    if (!headerValue) return defaultVal;
+    let decoded = headerValue;
+    try {
+        decoded = decodeURIComponent(headerValue);
+    } catch (e) {}
+    try {
+        const latinToUtf8 = Buffer.from(decoded, 'latin1').toString('utf8');
+        if (latinToUtf8 && !latinToUtf8.includes('\ufffd')) {
+            decoded = latinToUtf8;
+        }
+    } catch (e) {}
+    return decoded.trim();
+};
+
 // Database connection
 const pool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
@@ -390,42 +406,71 @@ app.post('/api/declarations', async (req, res) => {
         );
 
         // Log the action
-        const usernameForLog = req.headers['x-username'] || 'desconhecido';
+        const usernameForLog = parseUsernameHeader(req.headers['x-username'], 'desconhecido');
         await createLog(usernameForLog, 'CREATE/UPDATE', 'DECLARATION', id, `Declaração Nº ${number}`);
 
         // Notification Email
         try {
-            console.log(`Iniciando processo de e-mail para usuário: ${usernameForLog}`);
-            let userEmail = '';
-            let masterEmails = [];
+            console.log(`Iniciando processo de e-mail para declaração Nº ${number} (Solicitante logado: ${usernameForLog})`);
 
-            try {
-                const userResult = await pool.query('SELECT email FROM users WHERE username = $1', [usernameForLog]);
-                userEmail = userResult.rows[0]?.email;
-                if (userEmail) {
-                    const normalizedUserEmail = userEmail.toLowerCase().trim();
-                    const recipientsResult = await pool.query("SELECT email FROM users WHERE receive_dni_emails = true");
-                    masterEmails = [...new Set(recipientsResult.rows
-                        .map(r => r.email?.toLowerCase().trim())
-                        .filter(e => e && e !== normalizedUserEmail))];
-                }
-            } catch (dbErr) {
-                console.warn('Database email fetch failed, using memory fallback:', dbErr.message);
-                const user = inMemoryStore.users.find(u => u.username === usernameForLog);
-                userEmail = user?.email;
-                if (userEmail) {
-                    const normalizedUserEmail = userEmail.toLowerCase().trim();
-                    masterEmails = [...new Set(inMemoryStore.users
-                        .filter(u => u.receive_dni_emails && u.email)
-                        .map(u => u.email.toLowerCase().trim())
-                        .filter(e => e !== normalizedUserEmail))];
+            // 1. Resolver e-mail do autor / solicitante:
+            // Prioridade 1: employeeEmail preenchido no formulário da DNI
+            let authorEmail = (employeeEmail || '').trim().toLowerCase();
+
+            // Prioridade 2: Se não houver employeeEmail válido, busca no banco pelo username ou email
+            if (!authorEmail || !authorEmail.includes('@')) {
+                try {
+                    const userResult = await pool.query(
+                        'SELECT email FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1)',
+                        [usernameForLog]
+                    );
+                    authorEmail = (userResult.rows[0]?.email || '').trim().toLowerCase();
+                } catch (dbErr) {
+                    console.warn('Database author email fetch failed, using memory fallback:', dbErr.message);
+                    const user = inMemoryStore.users.find(u => 
+                        u.username?.toLowerCase() === usernameForLog.toLowerCase() || 
+                        u.email?.toLowerCase() === usernameForLog.toLowerCase()
+                    );
+                    authorEmail = (user?.email || '').trim().toLowerCase();
                 }
             }
 
-            if (userEmail) {
-                console.log(`E-mail do usuário encontrado: ${userEmail}`);
-                const normalizedUserEmail = userEmail.toLowerCase().trim();
+            // 2. Resolver destinatários marcados para receber e-mails de DNI (receive_dni_emails = true)
+            // IMPORTANTE: Esta busca roda SEMPRE, independentemente de authorEmail ter sido localizado
+            let dniSubscribers = [];
+            try {
+                const recipientsResult = await pool.query("SELECT email FROM users WHERE receive_dni_emails = true");
+                dniSubscribers = [...new Set(recipientsResult.rows
+                    .map(r => r.email?.toLowerCase().trim())
+                    .filter(e => e && e.includes('@')))];
+            } catch (dbErr) {
+                console.warn('Database subscribers fetch failed, using memory fallback:', dbErr.message);
+                dniSubscribers = [...new Set(inMemoryStore.users
+                    .filter(u => u.receive_dni_emails && u.email)
+                    .map(u => u.email.toLowerCase().trim())
+                    .filter(e => e && e.includes('@')))];
+            }
 
+            console.log(`Assinantes de DNI encontrados (${dniSubscribers.length}):`, dniSubscribers);
+            if (authorEmail) {
+                console.log(`E-mail do autor identificado: ${authorEmail}`);
+            }
+
+            // 3. Montar destinatário principal ('to') e cópias ('cc')
+            let primaryRecipient = '';
+            let secondaryRecipients = [];
+
+            if (authorEmail && authorEmail.includes('@')) {
+                primaryRecipient = authorEmail;
+                // Exclui o autor de CC para evitar duplicidade de envio
+                secondaryRecipients = dniSubscribers.filter(e => e !== authorEmail);
+            } else if (dniSubscribers.length > 0) {
+                // Caso o autor não possua e-mail, envia diretamente para os assinantes cadastrados
+                primaryRecipient = dniSubscribers[0];
+                secondaryRecipients = dniSubscribers.slice(1);
+            }
+
+            if (primaryRecipient) {
                 // Handle filename generation for attachment
                 const months = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
                 const d = new Date();
@@ -482,7 +527,6 @@ app.post('/api/declarations', async (req, res) => {
                     logoPath = path.join(__dirname, '../dist/LOGOS/LogoPrincipal.png');
                 }
 
-                // Final attempt: if it fails, we still want to send the email without the logo
                 const attachments = [];
                 if (fs.existsSync(logoPath)) {
                     attachments.push({
@@ -495,15 +539,19 @@ app.post('/api/declarations', async (req, res) => {
                 }
 
                 const mailOptions = {
-                    from: `"DNIGen" <${process.env.SMTP_USER}>`,
-                    to: userEmail,
-                    cc: masterEmails.join(', '),
+                    from: `"DNIGen" <${process.env.SMTP_USER || 'contato@ehspro.com.br'}>`,
+                    to: primaryRecipient,
                     subject: `Declaração de Transporte #${number} - ${recipient.name}`,
                     text: `Olá ${usernameForLog}, uma nova declaração de transporte foi gerada (#${number}).\n\nRITM: ${ritm}\nEmpresa: ${company}\nDestinatário: ${recipient.name}\n\nO PDF está em anexo.`,
                     html: emailHtml,
                     priority: 'high',
                     attachments: attachments
                 };
+
+                // Passa array no CC apenas quando houver destinatários secundários
+                if (secondaryRecipients && secondaryRecipients.length > 0) {
+                    mailOptions.cc = secondaryRecipients;
+                }
 
                 if (pdfBase64) {
                     console.log('Anexando PDF em Base64...');
@@ -516,9 +564,9 @@ app.post('/api/declarations', async (req, res) => {
 
                 const info = await transporter.sendMail(mailOptions);
                 console.log(`Email enviado com sucesso! MessageID: ${info.messageId}`);
-                console.log(`Destinatário: ${userEmail}${masterEmails.length > 0 ? ` (com CC para: ${masterEmails.join(', ')})` : ''}`);
+                console.log(`Destinatário principal: ${primaryRecipient}${secondaryRecipients.length > 0 ? ` (com CC para: ${secondaryRecipients.join(', ')})` : ''}`);
             } else {
-                console.warn(`Aviso: Usuário ${usernameForLog} não possui e-mail cadastrado.`);
+                console.warn(`Aviso: Nenhum destinatário de e-mail encontrado para a declaração Nº ${number} (Autor logado: ${usernameForLog}).`);
             }
         } catch (mailErr) {
             console.error('ERRO FATAL NO ENVIO DE E-MAIL:', mailErr);
@@ -580,7 +628,7 @@ app.post('/api/declarations', async (req, res) => {
 
 app.delete('/api/declarations/:id', async (req, res) => {
     const { id } = req.params;
-    const username = req.headers['x-username'] || 'desconhecido';
+    const username = parseUsernameHeader(req.headers['x-username'], 'desconhecido');
     try {
         await pool.query('DELETE FROM declarations WHERE id = $1', [id]);
         await createLog(username, 'DELETE', 'DECLARATION', id, `Excluiu declaração ID ${id}`);
@@ -596,8 +644,8 @@ app.get('/api/logs', async (req, res) => {
         const result = await pool.query('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 100');
         res.json(result.rows);
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Erro ao buscar logs' });
+        console.warn('Database GET logs failed, using memory fallback:', err.message);
+        res.json(inMemoryStore.auditLogs);
     }
 });
 
@@ -627,7 +675,7 @@ app.get('/api/user-role/:username', async (req, res) => {
 
 app.post('/api/users', async (req, res) => {
     const { username, role, email, receiveDniEmails } = req.body;
-    const adminUsername = req.headers['x-username'] || 'admin';
+    const adminUsername = parseUsernameHeader(req.headers['x-username'], 'admin');
     try {
         // Create user with a random temp password
         const tempPassword = crypto.randomBytes(16).toString('hex');
@@ -688,7 +736,7 @@ app.post('/api/users', async (req, res) => {
         }
 
         await transporter.sendMail({
-            from: `"DNIGen" <${process.env.SMTP_USER}>`,
+            from: `"DNIGen" <${process.env.SMTP_USER || 'contato@ehspro.com.br'}>`,
             to: email,
             subject: 'Bem-vindo ao DNIGen - Defina sua Senha',
             html: emailHtml,
@@ -717,7 +765,7 @@ app.post('/api/users', async (req, res) => {
 app.delete('/api/users/:id', async (req, res) => {
     const { id } = req.params;
     try {
-        const adminUsername = req.headers['x-username'] || 'admin';
+        const adminUsername = parseUsernameHeader(req.headers['x-username'], 'admin');
         await pool.query('DELETE FROM users WHERE id = $1', [id]);
         inMemoryStore.users = inMemoryStore.users.filter(u => u.id !== parseInt(id, 10));
         await createLog(adminUsername, 'DELETE', 'USER', id, 'Excluiu um usuário');
@@ -732,7 +780,7 @@ app.delete('/api/users/:id', async (req, res) => {
 app.put('/api/users/:id', async (req, res) => {
     const { id } = req.params;
     const { username, password, role, email, receiveDniEmails } = req.body;
-    const adminUsername = req.headers['x-username'] || 'admin';
+    const adminUsername = parseUsernameHeader(req.headers['x-username'], 'admin');
     try {
         if (password && password.trim() !== '') {
             const hashedPassword = await bcrypt.hash(password, 10);
@@ -783,7 +831,7 @@ app.put('/api/users/:id', async (req, res) => {
 app.patch('/api/users/:id/toggle-emails', async (req, res) => {
     const { id } = req.params;
     const { receiveDniEmails } = req.body;
-    const adminUsername = req.headers['x-username'] || 'admin';
+    const adminUsername = parseUsernameHeader(req.headers['x-username'], 'admin');
     try {
         await pool.query('UPDATE users SET receive_dni_emails = $1 WHERE id = $2', [receiveDniEmails, id]);
         
@@ -852,7 +900,7 @@ app.post('/api/forgot-password', async (req, res) => {
         }
 
         await transporter.sendMail({
-            from: `"DNIGen" <${process.env.SMTP_USER}>`,
+            from: `"DNIGen" <${process.env.SMTP_USER || 'contato@ehspro.com.br'}>`,
             to: email,
             subject: 'Redefinição de Senha - DNIGen',
             html: emailHtml,
@@ -893,7 +941,7 @@ app.post('/api/reset-password', async (req, res) => {
 
 app.post('/api/users/:id/reset-password-email', authLimiter, async (req, res) => {
     const { id } = req.params;
-    const adminUsername = req.headers['x-username'] || 'admin';
+    const adminUsername = parseUsernameHeader(req.headers['x-username'], 'admin');
     try {
         const userResult = await pool.query('SELECT username, email FROM users WHERE id = $1', [id]);
         if (userResult.rows.length === 0) {
@@ -938,7 +986,7 @@ app.post('/api/users/:id/reset-password-email', authLimiter, async (req, res) =>
         }
 
         await transporter.sendMail({
-            from: `"DNIGen" <${process.env.SMTP_USER}>`,
+            from: `"DNIGen" <${process.env.SMTP_USER || 'contato@ehspro.com.br'}>`,
             to: user.email,
             subject: 'Redefinição de Senha - DNIGen',
             html: emailHtml,

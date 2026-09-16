@@ -36,7 +36,7 @@ export const UsersView: React.FC<Props> = ({ apiUrl, showNotification }) => {
                 method: 'PATCH',
                 headers: { 
                     'Content-Type': 'application/json',
-                    'x-username': sessionStorage.getItem('username') || 'admin'
+                    'x-username': encodeURIComponent(sessionStorage.getItem('username') || 'admin')
                 },
                 body: JSON.stringify({ receiveDniEmails: nextState })
             });

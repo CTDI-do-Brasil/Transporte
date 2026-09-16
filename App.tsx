@@ -189,7 +189,7 @@ const App: React.FC = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-username': currentUsername || 'admin'
+          'x-username': encodeURIComponent(currentUsername || 'admin')
         },
         body: JSON.stringify(activeDeclaration)
       });
@@ -428,7 +428,7 @@ const App: React.FC = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-username': currentUsername || 'admin'
+          'x-username': encodeURIComponent(currentUsername || 'admin')
         },
         body: JSON.stringify(updatedDecl)
       });
@@ -521,7 +521,7 @@ const App: React.FC = () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-username': currentUsername || 'admin'
+            'x-username': encodeURIComponent(currentUsername || 'admin')
           },
           body: JSON.stringify({ ...newDeclHost, pdfBase64 })
         });
@@ -592,7 +592,7 @@ const App: React.FC = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-username': currentUsername || 'admin'
+          'x-username': encodeURIComponent(currentUsername || 'admin')
         },
         body: JSON.stringify({ ...activeDeclaration, pdfBase64 })
       });
