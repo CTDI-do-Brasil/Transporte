@@ -453,41 +453,47 @@ const App: React.FC = () => {
     setIsLoading(true);
     let attempts = 0;
     const maxAttempts = 3;
+    const isEditing = !!(data?.id && data?.number);
 
     const tryGenerate = async (): Promise<boolean> => {
       attempts++;
       let nextNum = currentNumber + 1;
+      let declarationId = data?.id || crypto.randomUUID();
+      let formattedNum = data?.number || '';
 
-      try {
-        const numRes = await fetch(`${API_URL}/declarations/next-number`);
-        if (numRes.ok) {
-          const numData = await numRes.json();
-          if (numData.nextNumber) {
-            nextNum = numData.nextNumber;
+      if (!isEditing || !formattedNum) {
+        try {
+          const numRes = await fetch(`${API_URL}/declarations/next-number`);
+          if (numRes.ok) {
+            const numData = await numRes.json();
+            if (numData.nextNumber) {
+              nextNum = numData.nextNumber;
+            }
           }
+        } catch (numErr) {
+          console.error('Error fetching next number from server, using fallback:', numErr);
         }
-      } catch (numErr) {
-        console.error('Error fetching next number from server, using fallback:', numErr);
+        formattedNum = nextNum.toString().padStart(8, '0');
       }
 
-      const formattedNum = nextNum.toString().padStart(8, '0');
-
       const newDeclHost: Declaration = {
-        id: crypto.randomUUID(),
+        id: declarationId,
         number: formattedNum,
-        date: new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }).toUpperCase(),
-        city: 'CAMPINAS',
-        recipient: data.recipient || INITIAL_RECIPIENT,
-        equipment: data.equipment || INITIAL_EQUIPMENT,
-        sender: data.sender || INITIAL_SENDER,
-        carrier: data.carrier || INITIAL_CARRIER,
-        requestNumber: data.requestNumber,
-        shipToAddressTo: data.shipToAddressTo,
-        employeeEmail: data.employeeEmail,
-        deliveryDate: data.deliveryDate,
-        requestType: data.requestType,
-        priority: data.priority,
-        legalHold: data.legalHold
+        date: data?.date || new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }).toUpperCase(),
+        city: data?.city || 'CAMPINAS',
+        recipient: data?.recipient || INITIAL_RECIPIENT,
+        equipment: data?.equipment || INITIAL_EQUIPMENT,
+        sender: data?.sender || INITIAL_SENDER,
+        carrier: data?.carrier || INITIAL_CARRIER,
+        requestNumber: data?.requestNumber,
+        signatureSender: data?.signatureSender,
+        signatureCarrier: data?.signatureCarrier,
+        shipToAddressTo: data?.shipToAddressTo,
+        employeeEmail: data?.employeeEmail,
+        deliveryDate: data?.deliveryDate,
+        requestType: data?.requestType,
+        priority: data?.priority,
+        legalHold: data?.legalHold
       };
 
       setActiveDeclaration(newDeclHost);
@@ -529,21 +535,29 @@ const App: React.FC = () => {
         if (response.status === 409) {
           const errData = await response.json();
           if (errData.error === 'duplicate_number') {
-            if (attempts < maxAttempts) {
+            if (!isEditing && attempts < maxAttempts) {
               console.warn(`Duplicate number detected (${formattedNum}), retrying attempt ${attempts + 1}...`);
               setCurrentNumber(nextNum);
               return await tryGenerate();
             } else {
-              showNotification('Erro de Duplicidade', 'Não foi possível gerar um número único após várias tentativas. Tente novamente.', 'error');
+              showNotification('Erro de Duplicidade', 'Não foi possível salvar devido a conflito de número. Verifique os dados.', 'error');
               return false;
             }
           }
         }
 
         if (response.ok) {
-          setHistory([newDeclHost, ...history]);
-          setCurrentNumber(nextNum);
-          showNotification('Sucesso', 'Documento gerado, salvo e enviado por e-mail com sucesso!', 'success');
+          setHistory(prev => {
+            const exists = prev.some(h => h.id === newDeclHost.id);
+            if (exists) {
+              return prev.map(h => h.id === newDeclHost.id ? newDeclHost : h);
+            }
+            return [newDeclHost, ...prev];
+          });
+          if (!isEditing) {
+            setCurrentNumber(nextNum);
+          }
+          showNotification('Sucesso', isEditing ? 'Declaração atualizada com sucesso!' : 'Documento gerado, salvo e enviado por e-mail com sucesso!', 'success');
           return true;
         } else {
           showNotification('Atenção', 'Documento gerado, mas houve um erro ao enviar para o servidor.', 'error');
@@ -890,6 +904,8 @@ const App: React.FC = () => {
                       onUpdate={handleUpdate}
                       requestNumber={activeDeclaration?.requestNumber}
                       employeeEmail={activeDeclaration?.employeeEmail}
+                      declarationNumber={activeDeclaration?.number}
+                      isEditing={!!(activeDeclaration?.id && activeDeclaration?.number)}
                       onGenerate={() => handleGenerate(activeDeclaration!)}
                       showNotification={showNotification}
                       onOpenSmartImport={() => setIsSmartModalOpen(true)}

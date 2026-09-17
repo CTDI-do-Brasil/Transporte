@@ -389,8 +389,15 @@ app.post('/api/declarations', async (req, res) => {
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             ON CONFLICT (id) DO UPDATE SET
-            signature_sender = EXCLUDED.signature_sender,
-            signature_carrier = EXCLUDED.signature_carrier,
+            number = EXCLUDED.number,
+            date = EXCLUDED.date,
+            city = EXCLUDED.city,
+            recipient = EXCLUDED.recipient,
+            equipment = EXCLUDED.equipment,
+            sender = EXCLUDED.sender,
+            carrier = EXCLUDED.carrier,
+            signature_sender = COALESCE(EXCLUDED.signature_sender, declarations.signature_sender),
+            signature_carrier = COALESCE(EXCLUDED.signature_carrier, declarations.signature_carrier),
             request_number = EXCLUDED.request_number,
             ship_to_address_to = EXCLUDED.ship_to_address_to,
             employee_email = EXCLUDED.employee_email,

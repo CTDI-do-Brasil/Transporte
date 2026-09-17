@@ -24,6 +24,8 @@ interface Props {
   equipment: Equipment[];
   requestNumber?: string;
   employeeEmail?: string;
+  declarationNumber?: string;
+  isEditing?: boolean;
   onUpdate: (data: Partial<{
     sender: SenderData;
     recipient: RecipientData;
@@ -47,6 +49,8 @@ export const DeclarationForm: React.FC<Props> = ({
   equipment,
   requestNumber,
   employeeEmail,
+  declarationNumber,
+  isEditing,
   onUpdate,
   onGenerate,
   onPrint,
@@ -405,7 +409,14 @@ export const DeclarationForm: React.FC<Props> = ({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="h-6 w-1.5 bg-[#0078d4] rounded-full"></div>
-                <h3 className="text-sm font-black text-zinc-900 uppercase tracking-widest">Remetente (Pessoa Física ou Jurídica)</h3>
+                <h3 className="text-sm font-black text-zinc-900 uppercase tracking-widest">
+                  Remetente (Pessoa Física ou Jurídica)
+                </h3>
+                {isEditing && declarationNumber && (
+                  <span className="px-2.5 py-1 bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-black rounded-lg uppercase tracking-wider">
+                    Editando DNI #{declarationNumber}
+                  </span>
+                )}
               </div>
               <div className="flex gap-4">
                 <button type="button" onClick={onOpenSmartImport} className="flex items-center gap-2 px-4 py-2 text-[10px] font-black uppercase tracking-widest bg-white text-[#0078d4] border border-[#0078d4] hover:bg-blue-50 rounded-xl transition-all shadow-sm">
@@ -638,7 +649,7 @@ export const DeclarationForm: React.FC<Props> = ({
             onClick={() => onGenerate()}
             className="flex items-center gap-2 px-10 py-4 bg-zinc-900 text-white rounded-2xl font-black text-xs uppercase tracking-[0.2em] hover:bg-zinc-800 transition-all shadow-xl active:scale-95"
           >
-            Finalizar e Gerar <CheckCircle2Icon className="w-5 h-5" />
+            {isEditing ? 'Salvar Alterações' : 'Finalizar e Gerar'} <CheckCircle2Icon className="w-5 h-5" />
           </button>
         )}
       </div>
