@@ -22,8 +22,35 @@ export const UsersView: React.FC<Props> = ({ apiUrl, showNotification }) => {
     const [isReseting, setIsReseting] = useState<{ [key: number]: boolean }>({});
     const [error, setError] = useState('');
     const [showForm, setShowForm] = useState(false);
+    const [isTestingEmail, setIsTestingEmail] = useState(false);
     const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' as 'master' | 'user', email: '', receiveDniEmails: false });
     const [editingUserId, setEditingUserId] = useState<number | null>(null);
+
+    const handleTestSmtp = async () => {
+        setIsTestingEmail(true);
+        const currentUserEmail = sessionStorage.getItem('username') || '';
+        try {
+            const response = await fetch(`${apiUrl}/test-email?to=${encodeURIComponent(currentUserEmail)}`);
+            if (!response.ok) {
+                showNotification('Erro no Servidor', `A rota de teste retornou HTTP ${response.status}. Verifique se o container no CapRover foi atualizado.`, 'error');
+                return;
+            }
+            const data = await response.json();
+            if (data.smtpConnectionTest?.status === 'CONECTADO COM SUCESSO') {
+                const sendStatus = data.sendTestResult?.status === 'ENVIADO COM SUCESSO' 
+                    ? ` e e-mail de teste disparado com sucesso para ${currentUserEmail}!` 
+                    : (data.sendTestResult?.message ? ` (Aviso no envio: ${data.sendTestResult.message})` : '');
+                showNotification('SMTP Conectado', `Conexão estabelecida com ${data.smtpConfig.host}:${data.smtpConfig.port}${sendStatus}`, 'success');
+            } else {
+                const errorMsg = data.smtpConnectionTest?.message || data.smtpConnectionTest?.code || 'Falha ao conectar no servidor SMTP.';
+                showNotification('Falha de Conexão SMTP', `${errorMsg} (Host configurado: ${data.smtpConfig.host}, Porta: ${data.smtpConfig.port})`, 'error');
+            }
+        } catch (err: any) {
+            showNotification('Erro de Rede', `Não foi possível consultar o teste: ${err.message}`, 'error');
+        } finally {
+            setIsTestingEmail(false);
+        }
+    };
 
     const handleToggleDniEmails = async (user: User) => {
         const nextState = !user.receive_dni_emails;
@@ -169,17 +196,28 @@ export const UsersView: React.FC<Props> = ({ apiUrl, showNotification }) => {
                     <h2 className="text-3xl font-black text-zinc-900 tracking-tight">Gestão de Usuários</h2>
                     <p className="text-zinc-500 font-medium mt-1">Cadastre e gerencie os acessos ao sistema.</p>
                 </div>
-                <button
-                    onClick={() => {
-                        setEditingUserId(null);
-                        setNewUser({ username: '', password: '', role: 'user', email: '', receiveDniEmails: false });
-                        setShowForm(true);
-                    }}
-                    className="flex items-center gap-2 px-6 py-3.5 bg-zinc-950 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-zinc-800 transition-all shadow-xl shadow-zinc-200"
-                >
-                    <UserPlusIcon className="w-4 h-4" />
-                    Novo Usuário
-                </button>
+                <div className="flex items-center gap-3">
+                    <button
+                        onClick={handleTestSmtp}
+                        disabled={isTestingEmail}
+                        className="flex items-center gap-2 px-5 py-3.5 bg-zinc-100 text-zinc-800 hover:bg-zinc-200 rounded-2xl font-black text-xs uppercase tracking-widest transition-all shadow-sm border border-zinc-200 disabled:opacity-50"
+                        title="Testar conexão com o servidor de e-mail (SMTP)"
+                    >
+                        {isTestingEmail ? <LoaderIcon className="w-4 h-4 animate-spin text-[#0078d4]" /> : <MailIcon className="w-4 h-4 text-[#0078d4]" />}
+                        Testar E-mail
+                    </button>
+                    <button
+                        onClick={() => {
+                            setEditingUserId(null);
+                            setNewUser({ username: '', password: '', role: 'user', email: '', receiveDniEmails: false });
+                            setShowForm(true);
+                        }}
+                        className="flex items-center gap-2 px-6 py-3.5 bg-zinc-950 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-zinc-800 transition-all shadow-xl shadow-zinc-200"
+                    >
+                        <UserPlusIcon className="w-4 h-4" />
+                        Novo Usuário
+                    </button>
+                </div>
             </div>
 
             {/* Modal de Cadastro */}

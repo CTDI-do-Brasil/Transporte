@@ -173,19 +173,27 @@ try {
 }
 
 // Email Transporter Configuration
-const transporter = nodemailer.createTransport({
+const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
+
+const transportOptions = {
     host: process.env.SMTP_HOST || 'srv-captain--mailserver',
-    port: parseInt(process.env.SMTP_PORT || '587'),
-    secure: false, // Port 587 uses STARTTLS
-    auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-    },
+    port: smtpPort,
+    secure: smtpSecure,
     tls: {
         rejectUnauthorized: false,
         minVersion: 'TLSv1'
     }
-});
+};
+
+if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+    transportOptions.auth = {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+    };
+}
+
+const transporter = nodemailer.createTransport(transportOptions);
 
 const sendEmail = async (to, subject, html) => {
     try {
@@ -261,6 +269,83 @@ app.get('/api/setup-admin', async (req, res) => {
         console.error(err);
         res.status(500).send('Erro ao criar admin: ' + err.message);
     }
+});
+
+// Diagnostic route for SMTP email delivery
+app.get('/api/test-email', async (req, res) => {
+    const targetEmail = req.query.to || (process.env.SMTP_USER && process.env.SMTP_USER.includes('@') ? process.env.SMTP_USER : '');
+    const diagnostics = {
+        timestamp: new Date().toISOString(),
+        version: '1.3.0-email-diagnostics',
+        environment: process.env.NODE_ENV || 'development',
+        smtpConfig: {
+            host: process.env.SMTP_HOST || 'srv-captain--mailserver (padrão CapRover)',
+            port: smtpPort,
+            secure: smtpSecure,
+            userConfigured: !!process.env.SMTP_USER,
+            user: process.env.SMTP_USER ? `${process.env.SMTP_USER.slice(0, 3)}***@***` : '(variável SMTP_USER não definida no servidor)',
+            passConfigured: !!process.env.SMTP_PASS,
+        },
+        smtpConnectionTest: null,
+        sendTestResult: null,
+        activeDniSubscribersInDatabase: []
+    };
+
+    // 1. Consultar assinantes no banco
+    try {
+        const subRes = await pool.query("SELECT id, username, email, receive_dni_emails FROM users WHERE receive_dni_emails = true");
+        diagnostics.activeDniSubscribersInDatabase = subRes.rows;
+    } catch (e) {
+        diagnostics.activeDniSubscribersInDatabase = `Erro ao consultar DB: ${e.message}`;
+    }
+
+    // 2. Testar handshake SMTP
+    try {
+        await transporter.verify();
+        diagnostics.smtpConnectionTest = {
+            status: 'CONECTADO COM SUCESSO',
+            details: 'O servidor backend conseguiu se conectar e autenticar com o servidor SMTP.'
+        };
+    } catch (verifyErr) {
+        diagnostics.smtpConnectionTest = {
+            status: 'FALHA DE CONEXÃO SMTP',
+            code: verifyErr.code,
+            command: verifyErr.command,
+            response: verifyErr.response,
+            responseCode: verifyErr.responseCode,
+            message: verifyErr.message
+        };
+    }
+
+    // 3. Teste de envio real se destinatário foi informado
+    if (targetEmail && targetEmail.includes('@')) {
+        try {
+            const info = await transporter.sendMail({
+                from: `"DNIGen Teste" <${process.env.SMTP_USER || 'contato@ehspro.com.br'}>`,
+                to: targetEmail,
+                subject: 'Teste de Envio de E-mail - DNIGen',
+                text: `Este é um e-mail de teste disparado pelo diagnóstico do DNIGen em ${new Date().toLocaleString('pt-BR')}. Se você recebeu isso, o envio está 100% operacional!`
+            });
+            diagnostics.sendTestResult = {
+                status: 'ENVIADO COM SUCESSO',
+                messageId: info.messageId,
+                accepted: info.accepted,
+                rejected: info.rejected
+            };
+        } catch (sendErr) {
+            diagnostics.sendTestResult = {
+                status: 'FALHA NO ENVIO',
+                code: sendErr.code,
+                command: sendErr.command,
+                response: sendErr.response,
+                message: sendErr.message
+            };
+        }
+    } else {
+        diagnostics.sendTestResult = 'Nenhum e-mail de destino fornecido. Passe ?to=seu-email@ctdi.com na URL para disparar um e-mail de teste real.';
+    }
+
+    res.json(diagnostics);
 });
 
 app.get('/api/setup-audit', async (req, res) => {
@@ -572,8 +657,10 @@ app.post('/api/declarations', async (req, res) => {
                 const info = await transporter.sendMail(mailOptions);
                 console.log(`Email enviado com sucesso! MessageID: ${info.messageId}`);
                 console.log(`Destinatário principal: ${primaryRecipient}${secondaryRecipients.length > 0 ? ` (com CC para: ${secondaryRecipients.join(', ')})` : ''}`);
+                await createLog(usernameForLog, 'EMAIL_SENT', 'DECLARATION', id, `E-mail DNI Nº ${number} enviado para: ${primaryRecipient}${secondaryRecipients.length > 0 ? ` (CC: ${secondaryRecipients.join(', ')})` : ''}`);
             } else {
                 console.warn(`Aviso: Nenhum destinatário de e-mail encontrado para a declaração Nº ${number} (Autor logado: ${usernameForLog}).`);
+                await createLog(usernameForLog, 'EMAIL_WARN', 'DECLARATION', id, `Nenhum destinatário de e-mail encontrado para a DNI Nº ${number}`);
             }
         } catch (mailErr) {
             console.error('ERRO FATAL NO ENVIO DE E-MAIL:', mailErr);
@@ -582,6 +669,7 @@ app.post('/api/declarations', async (req, res) => {
                 port: process.env.SMTP_PORT || '587',
                 user: process.env.SMTP_USER
             });
+            await createLog(usernameForLog, 'EMAIL_ERROR', 'DECLARATION', id, `Falha no envio de e-mail da DNI Nº ${number}: ${mailErr.message}`);
         }
 
         // Keep PostgreSQL sequence in sync with inserted numbers
