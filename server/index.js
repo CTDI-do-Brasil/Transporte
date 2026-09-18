@@ -505,30 +505,31 @@ app.post('/api/declarations', async (req, res) => {
         try {
             console.log(`Iniciando processo de e-mail para declaração Nº ${number} (Solicitante logado: ${usernameForLog})`);
 
-            // 1. Resolver e-mail do autor / solicitante:
-            // Prioridade 1: employeeEmail preenchido no formulário da DNI
-            let authorEmail = (employeeEmail || '').trim().toLowerCase();
-
-            // Prioridade 2: Se não houver employeeEmail válido, busca no banco pelo username ou email
-            if (!authorEmail || !authorEmail.includes('@')) {
+            // 1. Resolver e-mail do autor / operador interno (usuário logado no sistema):
+            // NOTA IMPORTANTE: O e-mail externo do chamado/declaração (employeeEmail) NUNCA é usado como destinatário (Opção 1 - 100% interno).
+            let loggedUserEmail = '';
+            if (usernameForLog && usernameForLog !== 'desconhecido') {
                 try {
                     const userResult = await pool.query(
                         'SELECT email FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1)',
                         [usernameForLog]
                     );
-                    authorEmail = (userResult.rows[0]?.email || '').trim().toLowerCase();
+                    loggedUserEmail = (userResult.rows[0]?.email || '').trim().toLowerCase();
                 } catch (dbErr) {
-                    console.warn('Database author email fetch failed, using memory fallback:', dbErr.message);
+                    console.warn('Database user email fetch failed, using memory fallback:', dbErr.message);
                     const user = inMemoryStore.users.find(u => 
                         u.username?.toLowerCase() === usernameForLog.toLowerCase() || 
                         u.email?.toLowerCase() === usernameForLog.toLowerCase()
                     );
-                    authorEmail = (user?.email || '').trim().toLowerCase();
+                    loggedUserEmail = (user?.email || '').trim().toLowerCase();
                 }
             }
 
-            // 2. Resolver destinatários marcados para receber e-mails de DNI (receive_dni_emails = true)
-            // IMPORTANTE: Esta busca roda SEMPRE, independentemente de authorEmail ter sido localizado
+            if (loggedUserEmail && !loggedUserEmail.includes('@')) {
+                loggedUserEmail = '';
+            }
+
+            // 2. Resolver destinatários internos marcados para receber e-mails de DNI (receive_dni_emails = true)
             let dniSubscribers = [];
             try {
                 const recipientsResult = await pool.query("SELECT email FROM users WHERE receive_dni_emails = true");
@@ -543,21 +544,19 @@ app.post('/api/declarations', async (req, res) => {
                     .filter(e => e && e.includes('@')))];
             }
 
-            console.log(`Assinantes de DNI encontrados (${dniSubscribers.length}):`, dniSubscribers);
-            if (authorEmail) {
-                console.log(`E-mail do autor identificado: ${authorEmail}`);
-            }
+            console.log(`[E-mail DNI Nº ${number}] Operador logado: ${usernameForLog} (${loggedUserEmail || 'sem e-mail cadastrado'})`);
+            console.log(`[E-mail DNI Nº ${number}] Assinantes internos ativos (${dniSubscribers.length}):`, dniSubscribers);
 
-            // 3. Montar destinatário principal ('to') e cópias ('cc')
+            // 3. Montar destinatário principal ('to') e cópias ('cc') - 100% INTERNO
             let primaryRecipient = '';
             let secondaryRecipients = [];
 
-            if (authorEmail && authorEmail.includes('@')) {
-                primaryRecipient = authorEmail;
+            if (loggedUserEmail && loggedUserEmail.includes('@')) {
+                primaryRecipient = loggedUserEmail;
                 // Exclui o autor de CC para evitar duplicidade de envio
-                secondaryRecipients = dniSubscribers.filter(e => e !== authorEmail);
+                secondaryRecipients = dniSubscribers.filter(e => e !== loggedUserEmail);
             } else if (dniSubscribers.length > 0) {
-                // Caso o autor não possua e-mail, envia diretamente para os assinantes cadastrados
+                // Caso o operador logado não possua e-mail, envia diretamente para os assinantes internos
                 primaryRecipient = dniSubscribers[0];
                 secondaryRecipients = dniSubscribers.slice(1);
             }
