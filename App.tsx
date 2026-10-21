@@ -26,7 +26,8 @@ import {
   EditIcon,
   ShieldCheckIcon,
   UsersIcon,
-  Edit2Icon
+  Edit2Icon,
+  FileSpreadsheetIcon
 } from 'lucide-react';
 import { Declaration, Equipment, SenderData, CarrierData, RecipientData } from './types';
 import { DeclarationPreview } from './components/DeclarationPreview';
@@ -624,6 +625,145 @@ const App: React.FC = () => {
     }
   };
 
+  const handleExportReport = async () => {
+    setIsLoading(true);
+    try {
+      let declarationsToExport = history;
+      try {
+        const response = await fetch(`${API_URL}/declarations`);
+        if (response.ok) {
+          const freshData = await response.json();
+          if (Array.isArray(freshData) && freshData.length > 0) {
+            declarationsToExport = freshData;
+            setHistory(freshData);
+          }
+        }
+      } catch (fetchErr) {
+        console.warn('Erro ao buscar declarações atualizadas para o relatório, usando histórico em memória:', fetchErr);
+      }
+
+      if (!declarationsToExport || declarationsToExport.length === 0) {
+        showNotification('Aviso', 'Nenhuma declaração encontrada para exportar.', 'info');
+        return;
+      }
+
+      // Ordenar por número decrescente (mais recentes primeiro)
+      const sorted = [...declarationsToExport].sort((a, b) => {
+        const numA = parseInt(a.number, 10) || 0;
+        const numB = parseInt(b.number, 10) || 0;
+        return numB - numA;
+      });
+
+      // Cabeçalhos detalhados incluindo o chamado (requestNumber)
+      const headers = [
+        'Número DNI',
+        'Chamado (Request Number)',
+        'Data de Emissão',
+        'Cliente / Empresa',
+        'Remetente',
+        'CPF / CNPJ Remetente',
+        'E-mail do Colaborador',
+        'Telefone Remetente',
+        'Endereço Remetente',
+        'Número',
+        'Bairro',
+        'Cidade Remetente',
+        'UF',
+        'CEP',
+        'Destinatário',
+        'CNPJ Destinatário',
+        'Cidade / UF Destino',
+        'Transportadora',
+        'Motorista',
+        'RG Motorista',
+        'Data Coleta',
+        'Qtd Itens',
+        'Modelos',
+        'Números de Série (Seriais)',
+        'Detalhamento Itens',
+        'Valor Total (R$)',
+        'Assinado Remetente',
+        'Assinado Transportadora'
+      ];
+
+      const escapeCsv = (val: any) => {
+        if (val === null || val === undefined) return '""';
+        const str = String(val).replace(/"/g, '""');
+        return `"${str}"`;
+      };
+
+      const rows = sorted.map(d => {
+        const equips = Array.isArray(d.equipment) ? d.equipment : [];
+        const totalValue = equips.reduce((acc, eq) => {
+          let val = 0;
+          if (typeof eq.unitValue === 'number') val = eq.unitValue;
+          else if (typeof eq.unitValue === 'string') {
+            const parsed = parseFloat((eq.unitValue as string).replace(/[^\d.,]/g, '').replace(',', '.'));
+            if (!isNaN(parsed)) val = parsed;
+          }
+          return acc + val;
+        }, 0);
+
+        const models = equips.map(e => e.model).filter(Boolean).join(', ');
+        const serials = equips.map(e => e.serialNumber).filter(Boolean).join(', ');
+        const equipDetails = equips.map(e => `${e.description || 'Item'} - Mod: ${e.model || '-'} - SN: ${e.serialNumber || '-'} - R$ ${Number(e.unitValue || 0).toFixed(2)}`).join(' | ');
+
+        return [
+          escapeCsv(d.number || ''),
+          escapeCsv(d.requestNumber || ''),
+          escapeCsv(d.date || ''),
+          escapeCsv(d.sender?.companyName || ''),
+          escapeCsv(d.sender?.name || ''),
+          escapeCsv(d.sender?.cpf || d.sender?.cnpj || ''),
+          escapeCsv(d.employeeEmail || ''),
+          escapeCsv(d.sender?.phone || ''),
+          escapeCsv(d.sender?.address || ''),
+          escapeCsv(d.sender?.number || ''),
+          escapeCsv(d.sender?.bairro || ''),
+          escapeCsv(d.sender?.city || ''),
+          escapeCsv(d.sender?.state || ''),
+          escapeCsv(d.sender?.zipCode || ''),
+          escapeCsv(d.recipient?.name || ''),
+          escapeCsv(d.recipient?.cnpj || ''),
+          escapeCsv(d.recipient?.cityState || ''),
+          escapeCsv(d.carrier?.companyName || ''),
+          escapeCsv(d.carrier?.driverName || ''),
+          escapeCsv(d.carrier?.rg || ''),
+          escapeCsv(d.carrier?.collectionDate || ''),
+          escapeCsv(equips.length),
+          escapeCsv(models),
+          escapeCsv(serials),
+          escapeCsv(equipDetails),
+          escapeCsv(totalValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })),
+          escapeCsv(d.signatureSender ? 'Sim' : 'Não'),
+          escapeCsv(d.signatureCarrier ? 'Sim' : 'Não')
+        ].join(';');
+      });
+
+      // UTF-8 BOM (\uFEFF) para garantir abertura direta no Excel sem problemas de acentuação e delimitador ponto-e-vírgula padrão BR
+      const csvContent = '\uFEFF' + [headers.join(';'), ...rows].join('\r\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const now = new Date();
+      const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+      link.setAttribute('href', url);
+      link.setAttribute('download', `Relatorio_DNIs_CTDI_${dateStr}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      showNotification('Sucesso', `Relatório com ${sorted.length} DNIs gerado com sucesso!`, 'success');
+    } catch (err) {
+      console.error('Erro ao gerar relatório:', err);
+      showNotification('Erro', 'Houve um problema ao gerar o relatório de DNIs.', 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleEdit = () => {
     setView('edit');
   };
@@ -838,6 +978,13 @@ const App: React.FC = () => {
                   active={view === 'consultation'}
                   collapsed={isMenuCollapsed}
                   onClick={() => setView('consultation')}
+                />
+                <SidebarItem
+                  icon={<FileSpreadsheetIcon className="w-5 h-5 text-emerald-600" />}
+                  label="Baixar Relatório"
+                  active={false}
+                  collapsed={isMenuCollapsed}
+                  onClick={handleExportReport}
                 />
                 {userRole === 'master' && (
                   <>
