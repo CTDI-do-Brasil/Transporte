@@ -29,6 +29,7 @@ import {
   Edit2Icon,
   FileSpreadsheetIcon
 } from 'lucide-react';
+import * as XLSX from 'xlsx';
 import { Declaration, Equipment, SenderData, CarrierData, RecipientData } from './types';
 import { DeclarationPreview } from './components/DeclarationPreview';
 import { DeclarationForm } from './components/DeclarationForm';
@@ -654,45 +655,8 @@ const App: React.FC = () => {
         return numB - numA;
       });
 
-      // Cabeçalhos detalhados incluindo o chamado (requestNumber)
-      const headers = [
-        'Número DNI',
-        'Chamado (Request Number)',
-        'Data de Emissão',
-        'Cliente / Empresa',
-        'Remetente',
-        'CPF / CNPJ Remetente',
-        'E-mail do Colaborador',
-        'Telefone Remetente',
-        'Endereço Remetente',
-        'Número',
-        'Bairro',
-        'Cidade Remetente',
-        'UF',
-        'CEP',
-        'Destinatário',
-        'CNPJ Destinatário',
-        'Cidade / UF Destino',
-        'Transportadora',
-        'Motorista',
-        'RG Motorista',
-        'Data Coleta',
-        'Qtd Itens',
-        'Modelos',
-        'Números de Série (Seriais)',
-        'Detalhamento Itens',
-        'Valor Total (R$)',
-        'Assinado Remetente',
-        'Assinado Transportadora'
-      ];
-
-      const escapeCsv = (val: any) => {
-        if (val === null || val === undefined) return '""';
-        const str = String(val).replace(/"/g, '""');
-        return `"${str}"`;
-      };
-
-      const rows = sorted.map(d => {
+      // Montar linhas da planilha Excel (.xlsx) com o chamado (requestNumber) em destaque
+      const excelRows = sorted.map(d => {
         const equips = Array.isArray(d.equipment) ? d.equipment : [];
         const totalValue = equips.reduce((acc, eq) => {
           let val = 0;
@@ -708,54 +672,80 @@ const App: React.FC = () => {
         const serials = equips.map(e => e.serialNumber).filter(Boolean).join(', ');
         const equipDetails = equips.map(e => `${e.description || 'Item'} - Mod: ${e.model || '-'} - SN: ${e.serialNumber || '-'} - R$ ${Number(e.unitValue || 0).toFixed(2)}`).join(' | ');
 
-        return [
-          escapeCsv(d.number || ''),
-          escapeCsv(d.requestNumber || ''),
-          escapeCsv(d.date || ''),
-          escapeCsv(d.sender?.companyName || ''),
-          escapeCsv(d.sender?.name || ''),
-          escapeCsv(d.sender?.cpf || d.sender?.cnpj || ''),
-          escapeCsv(d.employeeEmail || ''),
-          escapeCsv(d.sender?.phone || ''),
-          escapeCsv(d.sender?.address || ''),
-          escapeCsv(d.sender?.number || ''),
-          escapeCsv(d.sender?.bairro || ''),
-          escapeCsv(d.sender?.city || ''),
-          escapeCsv(d.sender?.state || ''),
-          escapeCsv(d.sender?.zipCode || ''),
-          escapeCsv(d.recipient?.name || ''),
-          escapeCsv(d.recipient?.cnpj || ''),
-          escapeCsv(d.recipient?.cityState || ''),
-          escapeCsv(d.carrier?.companyName || ''),
-          escapeCsv(d.carrier?.driverName || ''),
-          escapeCsv(d.carrier?.rg || ''),
-          escapeCsv(d.carrier?.collectionDate || ''),
-          escapeCsv(equips.length),
-          escapeCsv(models),
-          escapeCsv(serials),
-          escapeCsv(equipDetails),
-          escapeCsv(totalValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })),
-          escapeCsv(d.signatureSender ? 'Sim' : 'Não'),
-          escapeCsv(d.signatureCarrier ? 'Sim' : 'Não')
-        ].join(';');
+        return {
+          'Número DNI': d.number || '',
+          'Chamado (Request Number)': d.requestNumber || '',
+          'Data de Emissão': d.date || '',
+          'Cliente / Empresa': d.sender?.companyName || '',
+          'Remetente': d.sender?.name || '',
+          'CPF / CNPJ Remetente': d.sender?.cpf || d.sender?.cnpj || '',
+          'E-mail do Colaborador': d.employeeEmail || '',
+          'Telefone Remetente': d.sender?.phone || '',
+          'Endereço Remetente': d.sender?.address || '',
+          'Número': d.sender?.number || '',
+          'Bairro': d.sender?.bairro || '',
+          'Cidade Remetente': d.sender?.city || '',
+          'UF Remetente': d.sender?.state || '',
+          'CEP Remetente': d.sender?.zipCode || '',
+          'Destinatário': d.recipient?.name || '',
+          'CNPJ Destinatário': d.recipient?.cnpj || '',
+          'Cidade / UF Destino': d.recipient?.cityState || '',
+          'Transportadora': d.carrier?.companyName || '',
+          'Motorista': d.carrier?.driverName || '',
+          'RG Motorista': d.carrier?.rg || '',
+          'Data Coleta': d.carrier?.collectionDate || '',
+          'Qtd Itens': equips.length,
+          'Modelos': models,
+          'Números de Série (Seriais)': serials,
+          'Detalhamento Itens': equipDetails,
+          'Valor Total (R$)': totalValue,
+          'Assinado Remetente': d.signatureSender ? 'Sim' : 'Não',
+          'Assinado Transportadora': d.signatureCarrier ? 'Sim' : 'Não'
+        };
       });
 
-      // UTF-8 BOM (\uFEFF) para garantir abertura direta no Excel sem problemas de acentuação e delimitador ponto-e-vírgula padrão BR
-      const csvContent = '\uFEFF' + [headers.join(';'), ...rows].join('\r\n');
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
+      const ws = XLSX.utils.json_to_sheet(excelRows);
+
+      // Largura das colunas otimizada para abertura no Excel
+      ws['!cols'] = [
+        { wch: 14 }, // Número DNI
+        { wch: 28 }, // Chamado (Request Number)
+        { wch: 22 }, // Data de Emissão
+        { wch: 18 }, // Cliente / Empresa
+        { wch: 28 }, // Remetente
+        { wch: 20 }, // CPF / CNPJ Remetente
+        { wch: 30 }, // E-mail do Colaborador
+        { wch: 18 }, // Telefone Remetente
+        { wch: 34 }, // Endereço Remetente
+        { wch: 10 }, // Número
+        { wch: 20 }, // Bairro
+        { wch: 22 }, // Cidade Remetente
+        { wch: 6 },  // UF Remetente
+        { wch: 12 }, // CEP Remetente
+        { wch: 24 }, // Destinatário
+        { wch: 20 }, // CNPJ Destinatário
+        { wch: 20 }, // Cidade / UF Destino
+        { wch: 20 }, // Transportadora
+        { wch: 22 }, // Motorista
+        { wch: 16 }, // RG Motorista
+        { wch: 14 }, // Data Coleta
+        { wch: 10 }, // Qtd Itens
+        { wch: 24 }, // Modelos
+        { wch: 28 }, // Números de Série
+        { wch: 45 }, // Detalhamento Itens
+        { wch: 16 }, // Valor Total (R$)
+        { wch: 14 }, // Assinado Remetente
+        { wch: 14 }  // Assinado Transportadora
+      ];
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Relatório de DNIs');
+
       const now = new Date();
       const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      XLSX.writeFile(wb, `Relatorio_DNIs_CTDI_${dateStr}.xlsx`);
 
-      link.setAttribute('href', url);
-      link.setAttribute('download', `Relatorio_DNIs_CTDI_${dateStr}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-
-      showNotification('Sucesso', `Relatório com ${sorted.length} DNIs gerado com sucesso!`, 'success');
+      showNotification('Sucesso', `Planilha Excel (.xlsx) com ${sorted.length} DNIs baixada com sucesso!`, 'success');
     } catch (err) {
       console.error('Erro ao gerar relatório:', err);
       showNotification('Erro', 'Houve um problema ao gerar o relatório de DNIs.', 'error');
