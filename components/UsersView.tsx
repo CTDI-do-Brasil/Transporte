@@ -37,8 +37,9 @@ export const UsersView: React.FC<Props> = ({ apiUrl, showNotification }) => {
             }
             const data = await response.json();
             if (data.smtpConnectionTest?.status === 'CONECTADO COM SUCESSO') {
+                const targetRecipient = data.sendTestResult?.recipient || currentUserEmail;
                 const sendStatus = data.sendTestResult?.status === 'ENVIADO COM SUCESSO' 
-                    ? ` e e-mail de teste disparado com sucesso para ${currentUserEmail}!` 
+                    ? ` e e-mail de teste disparado com sucesso para ${targetRecipient}!` 
                     : (data.sendTestResult?.message ? ` (Aviso no envio: ${data.sendTestResult.message})` : '');
                 showNotification('SMTP Conectado', `Conexão estabelecida com ${data.smtpConfig.host}:${data.smtpConfig.port}${sendStatus}`, 'success');
             } else {

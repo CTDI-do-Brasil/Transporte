@@ -194,11 +194,12 @@ if (process.env.SMTP_USER && process.env.SMTP_PASS) {
 }
 
 const transporter = nodemailer.createTransport(transportOptions);
+const getSmtpFromAddress = () => process.env.SMTP_FROM || process.env.SMTP_USER || 'contato@ehspro.com.br';
 
 const sendEmail = async (to, subject, html) => {
     try {
         await transporter.sendMail({
-            from: `"DocTransporte" <${process.env.SMTP_USER || 'contato@ehspro.com.br'}>`,
+            from: `"DocTransporte" <${getSmtpFromAddress()}>`,
             to,
             subject,
             html
@@ -273,10 +274,27 @@ app.get('/api/setup-admin', async (req, res) => {
 
 // Diagnostic route for SMTP email delivery
 app.get('/api/test-email', async (req, res) => {
-    const targetEmail = req.query.to || (process.env.SMTP_USER && process.env.SMTP_USER.includes('@') ? process.env.SMTP_USER : '');
+    let targetEmail = (req.query.to || '').toString().trim();
+    if (targetEmail && !targetEmail.includes('@')) {
+        try {
+            const uRes = await pool.query(
+                'SELECT email FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1)',
+                [targetEmail]
+            );
+            targetEmail = (uRes.rows[0]?.email || '').trim();
+        } catch (_) {
+            targetEmail = '';
+        }
+    }
+    if (!targetEmail || !targetEmail.includes('@')) {
+        targetEmail = (process.env.SMTP_FROM && process.env.SMTP_FROM.includes('@'))
+            ? process.env.SMTP_FROM
+            : (process.env.SMTP_USER && process.env.SMTP_USER.includes('@') ? process.env.SMTP_USER : '');
+    }
+
     const diagnostics = {
         timestamp: new Date().toISOString(),
-        version: '1.3.0-email-diagnostics',
+        version: '1.4.0-email-diagnostics',
         environment: process.env.NODE_ENV || 'development',
         smtpConfig: {
             host: process.env.SMTP_HOST || 'srv-captain--mailserver (padrão CapRover)',
@@ -284,6 +302,7 @@ app.get('/api/test-email', async (req, res) => {
             secure: smtpSecure,
             userConfigured: !!process.env.SMTP_USER,
             user: process.env.SMTP_USER ? `${process.env.SMTP_USER.slice(0, 3)}***@***` : '(variável SMTP_USER não definida no servidor)',
+            from: getSmtpFromAddress(),
             passConfigured: !!process.env.SMTP_PASS,
         },
         smtpConnectionTest: null,
@@ -321,13 +340,14 @@ app.get('/api/test-email', async (req, res) => {
     if (targetEmail && targetEmail.includes('@')) {
         try {
             const info = await transporter.sendMail({
-                from: `"DNIGen Teste" <${process.env.SMTP_USER || 'contato@ehspro.com.br'}>`,
+                from: `"DNIGen Teste" <${getSmtpFromAddress()}>`,
                 to: targetEmail,
                 subject: 'Teste de Envio de E-mail - DNIGen',
                 text: `Este é um e-mail de teste disparado pelo diagnóstico do DNIGen em ${new Date().toLocaleString('pt-BR')}. Se você recebeu isso, o envio está 100% operacional!`
             });
             diagnostics.sendTestResult = {
                 status: 'ENVIADO COM SUCESSO',
+                recipient: targetEmail,
                 messageId: info.messageId,
                 accepted: info.accepted,
                 rejected: info.rejected
@@ -335,6 +355,7 @@ app.get('/api/test-email', async (req, res) => {
         } catch (sendErr) {
             diagnostics.sendTestResult = {
                 status: 'FALHA NO ENVIO',
+                recipient: targetEmail,
                 code: sendErr.code,
                 command: sendErr.command,
                 response: sendErr.response,
@@ -630,7 +651,7 @@ app.post('/api/declarations', async (req, res) => {
                 }
 
                 const mailOptions = {
-                    from: `"DNIGen" <${process.env.SMTP_USER || 'contato@ehspro.com.br'}>`,
+                    from: `"DNIGen" <${getSmtpFromAddress()}>`,
                     to: primaryRecipient,
                     subject: `Declaração de Transporte #${number} - ${recipient.name}`,
                     text: `Olá ${usernameForLog}, uma nova declaração de transporte foi gerada (#${number}).\n\nRITM: ${ritm}\nEmpresa: ${company}\nDestinatário: ${recipient.name}\n\nO PDF está em anexo.`,
@@ -830,7 +851,7 @@ app.post('/api/users', async (req, res) => {
         }
 
         await transporter.sendMail({
-            from: `"DNIGen" <${process.env.SMTP_USER || 'contato@ehspro.com.br'}>`,
+            from: `"DNIGen" <${getSmtpFromAddress()}>`,
             to: email,
             subject: 'Bem-vindo ao DNIGen - Defina sua Senha',
             html: emailHtml,
@@ -994,7 +1015,7 @@ app.post('/api/forgot-password', async (req, res) => {
         }
 
         await transporter.sendMail({
-            from: `"DNIGen" <${process.env.SMTP_USER || 'contato@ehspro.com.br'}>`,
+            from: `"DNIGen" <${getSmtpFromAddress()}>`,
             to: email,
             subject: 'Redefinição de Senha - DNIGen',
             html: emailHtml,
@@ -1080,7 +1101,7 @@ app.post('/api/users/:id/reset-password-email', authLimiter, async (req, res) =>
         }
 
         await transporter.sendMail({
-            from: `"DNIGen" <${process.env.SMTP_USER || 'contato@ehspro.com.br'}>`,
+            from: `"DNIGen" <${getSmtpFromAddress()}>`,
             to: user.email,
             subject: 'Redefinição de Senha - DNIGen',
             html: emailHtml,
