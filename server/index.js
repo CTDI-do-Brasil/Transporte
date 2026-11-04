@@ -318,25 +318,7 @@ app.get('/api/test-email', async (req, res) => {
         diagnostics.activeDniSubscribersInDatabase = `Erro ao consultar DB: ${e.message}`;
     }
 
-    // 2. Testar handshake SMTP
-    try {
-        await transporter.verify();
-        diagnostics.smtpConnectionTest = {
-            status: 'CONECTADO COM SUCESSO',
-            details: 'O servidor backend conseguiu se conectar e autenticar com o servidor SMTP.'
-        };
-    } catch (verifyErr) {
-        diagnostics.smtpConnectionTest = {
-            status: 'FALHA DE CONEXÃO SMTP',
-            code: verifyErr.code,
-            command: verifyErr.command,
-            response: verifyErr.response,
-            responseCode: verifyErr.responseCode,
-            message: verifyErr.message
-        };
-    }
-
-    // 3. Teste de envio real se destinatário foi informado
+    // 2. Testar conexão e envio em uma única sessão SMTP (evita bloqueio de login simultâneo em servidores como UOL Host)
     if (targetEmail && targetEmail.includes('@')) {
         try {
             const info = await transporter.sendMail({
@@ -345,6 +327,10 @@ app.get('/api/test-email', async (req, res) => {
                 subject: 'Teste de Envio de E-mail - DNIGen',
                 text: `Este é um e-mail de teste disparado pelo diagnóstico do DNIGen em ${new Date().toLocaleString('pt-BR')}. Se você recebeu isso, o envio está 100% operacional!`
             });
+            diagnostics.smtpConnectionTest = {
+                status: 'CONECTADO COM SUCESSO',
+                details: 'O servidor backend conectou, autenticou e enviou o e-mail com sucesso.'
+            };
             diagnostics.sendTestResult = {
                 status: 'ENVIADO COM SUCESSO',
                 recipient: targetEmail,
@@ -353,6 +339,14 @@ app.get('/api/test-email', async (req, res) => {
                 rejected: info.rejected
             };
         } catch (sendErr) {
+            diagnostics.smtpConnectionTest = {
+                status: 'FALHA DE CONEXÃO SMTP',
+                code: sendErr.code,
+                command: sendErr.command,
+                response: sendErr.response,
+                responseCode: sendErr.responseCode,
+                message: sendErr.message
+            };
             diagnostics.sendTestResult = {
                 status: 'FALHA NO ENVIO',
                 recipient: targetEmail,
@@ -363,6 +357,22 @@ app.get('/api/test-email', async (req, res) => {
             };
         }
     } else {
+        try {
+            await transporter.verify();
+            diagnostics.smtpConnectionTest = {
+                status: 'CONECTADO COM SUCESSO',
+                details: 'O servidor backend conseguiu se conectar e autenticar com o servidor SMTP.'
+            };
+        } catch (verifyErr) {
+            diagnostics.smtpConnectionTest = {
+                status: 'FALHA DE CONEXÃO SMTP',
+                code: verifyErr.code,
+                command: verifyErr.command,
+                response: verifyErr.response,
+                responseCode: verifyErr.responseCode,
+                message: verifyErr.message
+            };
+        }
         diagnostics.sendTestResult = 'Nenhum e-mail de destino fornecido. Passe ?to=seu-email@ctdi.com na URL para disparar um e-mail de teste real.';
     }
 
