@@ -26,6 +26,8 @@ interface Props {
   employeeEmail?: string;
   declarationNumber?: string;
   isEditing?: boolean;
+  isLoading?: boolean;
+  onClear?: () => void;
   onUpdate: (data: Partial<{
     sender: SenderData;
     recipient: RecipientData;
@@ -51,6 +53,8 @@ export const DeclarationForm: React.FC<Props> = ({
   employeeEmail,
   declarationNumber,
   isEditing,
+  isLoading,
+  onClear,
   onUpdate,
   onGenerate,
   onPrint,
@@ -346,16 +350,23 @@ export const DeclarationForm: React.FC<Props> = ({
       'Tem certeza que deseja apagar todos os dados inseridos neste formulário?',
       'confirm',
       () => {
-        onUpdate({
-          sender: {
-            name: '', cpf: '', cnpj: '', address: '', number: '', bairro: '', city: '',
-            state: '', zipCode: '', contact: '', phone: '', companyName: ''
-          },
-          carrier: { driverName: '', rg: '', collectionDate: new Date().toISOString().split('T')[0], companyName: '' },
-          equipment: [{ description: '', model: '', serialNumber: '', unitValue: 0 }],
-          recipient: { name: '', cnpj: '', ie: '', address: '', zipCode: '', cityState: '' }
-        });
+        if (onClear) {
+          onClear();
+        } else {
+          onUpdate({
+            requestNumber: '',
+            employeeEmail: '',
+            sender: {
+              name: '', cpf: '', cnpj: '', address: '', number: '', bairro: '', city: '',
+              state: '', zipCode: '', contact: '', phone: '', companyName: ''
+            },
+            carrier: { driverName: '', rg: '', collectionDate: new Date().toISOString().split('T')[0], companyName: '' },
+            equipment: [{ description: '', model: '', serialNumber: '', unitValue: 0 }],
+            recipient: { name: '', cnpj: '', ie: '', address: '', zipCode: '', cityState: '' }
+          });
+        }
         setStep(1);
+        setShowValidation(false);
       }
     );
   };
@@ -646,10 +657,11 @@ export const DeclarationForm: React.FC<Props> = ({
           </button>
         ) : (
           <button
+            disabled={isLoading}
             onClick={() => onGenerate()}
-            className="flex items-center gap-2 px-10 py-4 bg-zinc-900 text-white rounded-2xl font-black text-xs uppercase tracking-[0.2em] hover:bg-zinc-800 transition-all shadow-xl active:scale-95"
+            className={`flex items-center gap-2 px-10 py-4 bg-zinc-900 text-white rounded-2xl font-black text-xs uppercase tracking-[0.2em] hover:bg-zinc-800 transition-all shadow-xl active:scale-95 ${isLoading ? 'opacity-50 cursor-not-allowed pointer-events-none' : ''}`}
           >
-            {isEditing ? 'Salvar Alterações' : 'Finalizar e Gerar'} <CheckCircle2Icon className="w-5 h-5" />
+            {isLoading ? 'Processando...' : isEditing ? 'Salvar Alterações' : 'Finalizar e Gerar'} <CheckCircle2Icon className="w-5 h-5" />
           </button>
         )}
       </div>

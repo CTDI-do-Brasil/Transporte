@@ -180,6 +180,9 @@ const transportOptions = {
     host: process.env.SMTP_HOST || 'srv-captain--mailserver',
     port: smtpPort,
     secure: smtpSecure,
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
     tls: {
         rejectUnauthorized: false,
         minVersion: 'TLSv1'
@@ -403,6 +406,23 @@ app.get('/api/setup-audit', async (req, res) => {
 // Routes
 app.get('/api/declarations/next-number', async (req, res) => {
     try {
+        await pool.query(`
+            DO $$
+            DECLARE
+                max_num INTEGER;
+                curr_seq BIGINT;
+            BEGIN
+                SELECT COALESCE(MAX(CAST(number AS INTEGER)), 21524) INTO max_num
+                FROM declarations
+                WHERE number ~ '^[0-9]+$';
+
+                SELECT last_value INTO curr_seq FROM declaration_number_seq;
+
+                IF curr_seq IS NULL OR curr_seq < max_num THEN
+                    PERFORM setval('declaration_number_seq', max_num, true);
+                END IF;
+            END $$;
+        `);
         const result = await pool.query("SELECT nextval('declaration_number_seq') AS next_num");
         const nextNum = parseInt(result.rows[0].next_num, 10);
         res.json({ nextNumber: nextNum });
@@ -429,6 +449,52 @@ app.get('/api/declarations/next-number', async (req, res) => {
             }
             res.json({ nextNumber: nextNum });
         }
+    }
+});
+
+app.get('/api/declarations/check-request', async (req, res) => {
+    const reqNum = (req.query.requestNumber || '').toString().trim();
+    const excludeId = (req.query.excludeId || '').toString().trim();
+    if (!reqNum) {
+        return res.json({ exists: false, declarations: [] });
+    }
+    try {
+        const result = await pool.query(
+            `SELECT id, number, date, request_number, sender, equipment, created_at
+             FROM declarations
+             WHERE UPPER(TRIM(request_number)) = UPPER($1)
+               AND ($2 = '' OR id::text <> $2)
+             ORDER BY created_at DESC`,
+            [reqNum, excludeId]
+        );
+        res.json({
+            exists: result.rows.length > 0,
+            declarations: result.rows.map(r => ({
+                id: r.id,
+                number: r.number,
+                date: r.date,
+                requestNumber: r.request_number,
+                senderName: r.sender?.name || '',
+                companyName: r.sender?.companyName || ''
+            }))
+        });
+    } catch (err) {
+        console.warn('Database check-request failed:', err.message);
+        const matches = inMemoryStore.declarations.filter(d =>
+            (d.requestNumber || '').trim().toUpperCase() === reqNum.toUpperCase() &&
+            (!excludeId || d.id !== excludeId)
+        );
+        res.json({
+            exists: matches.length > 0,
+            declarations: matches.map(d => ({
+                id: d.id,
+                number: d.number,
+                date: d.date,
+                requestNumber: d.requestNumber,
+                senderName: d.sender?.name || '',
+                companyName: d.sender?.companyName || ''
+            }))
+        });
     }
 });
 
@@ -532,176 +598,6 @@ app.post('/api/declarations', async (req, res) => {
         const usernameForLog = parseUsernameHeader(req.headers['x-username'], 'desconhecido');
         await createLog(usernameForLog, 'CREATE/UPDATE', 'DECLARATION', id, `Declaração Nº ${number}`);
 
-        // Notification Email
-        try {
-            console.log(`Iniciando processo de e-mail para declaração Nº ${number} (Solicitante logado: ${usernameForLog})`);
-
-            // 1. Resolver e-mail do autor / operador interno (usuário logado no sistema):
-            // NOTA IMPORTANTE: O e-mail externo do chamado/declaração (employeeEmail) NUNCA é usado como destinatário (Opção 1 - 100% interno).
-            let loggedUserEmail = '';
-            if (usernameForLog && usernameForLog !== 'desconhecido') {
-                try {
-                    const userResult = await pool.query(
-                        'SELECT email FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1)',
-                        [usernameForLog]
-                    );
-                    loggedUserEmail = (userResult.rows[0]?.email || '').trim().toLowerCase();
-                } catch (dbErr) {
-                    console.warn('Database user email fetch failed, using memory fallback:', dbErr.message);
-                    const user = inMemoryStore.users.find(u => 
-                        u.username?.toLowerCase() === usernameForLog.toLowerCase() || 
-                        u.email?.toLowerCase() === usernameForLog.toLowerCase()
-                    );
-                    loggedUserEmail = (user?.email || '').trim().toLowerCase();
-                }
-            }
-
-            if (loggedUserEmail && !loggedUserEmail.includes('@')) {
-                loggedUserEmail = '';
-            }
-
-            // 2. Resolver destinatários internos marcados para receber e-mails de DNI (receive_dni_emails = true)
-            let dniSubscribers = [];
-            try {
-                const recipientsResult = await pool.query("SELECT email FROM users WHERE receive_dni_emails = true");
-                dniSubscribers = [...new Set(recipientsResult.rows
-                    .map(r => r.email?.toLowerCase().trim())
-                    .filter(e => e && e.includes('@')))];
-            } catch (dbErr) {
-                console.warn('Database subscribers fetch failed, using memory fallback:', dbErr.message);
-                dniSubscribers = [...new Set(inMemoryStore.users
-                    .filter(u => u.receive_dni_emails && u.email)
-                    .map(u => u.email.toLowerCase().trim())
-                    .filter(e => e && e.includes('@')))];
-            }
-
-            console.log(`[E-mail DNI Nº ${number}] Operador logado: ${usernameForLog} (${loggedUserEmail || 'sem e-mail cadastrado'})`);
-            console.log(`[E-mail DNI Nº ${number}] Assinantes internos ativos (${dniSubscribers.length}):`, dniSubscribers);
-
-            // 3. Montar destinatário principal ('to') e cópias ('cc') - 100% INTERNO
-            let primaryRecipient = '';
-            let secondaryRecipients = [];
-
-            if (loggedUserEmail && loggedUserEmail.includes('@')) {
-                primaryRecipient = loggedUserEmail;
-                // Exclui o autor de CC para evitar duplicidade de envio
-                secondaryRecipients = dniSubscribers.filter(e => e !== loggedUserEmail);
-            } else if (dniSubscribers.length > 0) {
-                // Caso o operador logado não possua e-mail, envia diretamente para os assinantes internos
-                primaryRecipient = dniSubscribers[0];
-                secondaryRecipients = dniSubscribers.slice(1);
-            }
-
-            if (primaryRecipient) {
-                // Handle filename generation for attachment
-                const months = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
-                const d = new Date();
-                const day = d.getDate().toString().padStart(2, '0');
-                const month = months[d.getMonth()];
-                const year = d.getFullYear().toString().slice(-2);
-                const dateStr = `${day}${month}${year}`;
-                
-                const ritm = requestNumber || 'RITM0000000';
-                const company = sender.companyName || 'GE Vernova';
-                const finalFilename = `SR - ${ritm} - DNI ${number} – ${company} - Reversa – ${dateStr}.pdf`;
-
-                const emailHtml = `
-                    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 500px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background-color: #ffffff; color: #1a202c;">
-                        <div style="padding: 25px 0; text-align: center; background: #f8fafc;">
-                            <img src="cid:logo" alt="DNIGen" style="height: 45px; width: auto; margin-bottom: 10px;">
-                            <h2 style="margin: 0; color: #0f172a; font-size: 18px; font-weight: 800; letter-spacing: -0.025em;">Nova Declaração #DNI ${number}</h2>
-                        </div>
-                        
-                        <div style="padding: 30px;">
-                            <p style="margin-top: 0; font-size: 14px; color: #475569;">Olá <strong>${escapeHtml(usernameForLog)}</strong>, os detalhes da nova declaração estão abaixo:</p>
-                            
-                            <div style="background-color: #f8fafc; border-radius: 8px; padding: 15px; margin: 20px 0;">
-                                <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-                                    <tr>
-                                        <td style="padding: 4px 0; color: #64748b; font-weight: 600; width: 90px;">RITM:</td>
-                                        <td style="padding: 4px 0; color: #0f172a; font-weight: 700;">${escapeHtml(ritm)}</td>
-                                    </tr>
-                                    <tr>
-                                        <td style="padding: 4px 0; color: #64748b; font-weight: 600;">Remetente:</td>
-                                        <td style="padding: 4px 0; color: #0f172a; font-weight: 700;">${escapeHtml(sender.name)}</td>
-                                    </tr>
-                                    <tr>
-                                        <td style="padding: 4px 0; color: #64748b; font-weight: 600;">Empresa:</td>
-                                        <td style="padding: 4px 0; color: #0f172a; font-weight: 700;">${escapeHtml(company)}</td>
-                                    </tr>
-                                    <tr>
-                                        <td style="padding: 4px 0; color: #64748b; font-weight: 600;">Destinatário:</td>
-                                        <td style="padding: 4px 0; color: #0f172a; font-weight: 700;">${escapeHtml(recipient.name)}</td>
-                                    </tr>
-                                </table>
-                            </div>
-                            
-                            <p style="color: #64748b; font-size: 12px; line-height: 1.5; margin-bottom: 0; text-align: center;">
-                                Documento PDF oficial anexado. Disponível também no sistema.
-                            </p>
-                        </div>
-                    </div>
-                `;
-
-                // Resolve logo path (handle both local development and CapRover/production)
-                let logoPath = path.join(__dirname, '../public/LOGOS/LogoPrincipal.png');
-                if (process.env.NODE_ENV === 'production') {
-                    logoPath = path.join(__dirname, '../dist/LOGOS/LogoPrincipal.png');
-                }
-
-                const attachments = [];
-                if (fs.existsSync(logoPath)) {
-                    attachments.push({
-                        filename: 'logo.png',
-                        path: logoPath,
-                        cid: 'logo'
-                    });
-                } else {
-                    console.warn('Logo not found at:', logoPath);
-                }
-
-                const mailOptions = {
-                    from: `"DNIGen" <${getSmtpFromAddress()}>`,
-                    to: primaryRecipient,
-                    subject: `Declaração de Transporte #${number} - ${recipient.name}`,
-                    text: `Olá ${usernameForLog}, uma nova declaração de transporte foi gerada (#${number}).\n\nRITM: ${ritm}\nEmpresa: ${company}\nDestinatário: ${recipient.name}\n\nO PDF está em anexo.`,
-                    html: emailHtml,
-                    priority: 'high',
-                    attachments: attachments
-                };
-
-                // Passa array no CC apenas quando houver destinatários secundários
-                if (secondaryRecipients && secondaryRecipients.length > 0) {
-                    mailOptions.cc = secondaryRecipients;
-                }
-
-                if (pdfBase64) {
-                    console.log('Anexando PDF em Base64...');
-                    mailOptions.attachments.push({
-                        filename: finalFilename,
-                        content: pdfBase64.split('base64,')[1] || pdfBase64,
-                        encoding: 'base64'
-                    });
-                }
-
-                const info = await transporter.sendMail(mailOptions);
-                console.log(`Email enviado com sucesso! MessageID: ${info.messageId}`);
-                console.log(`Destinatário principal: ${primaryRecipient}${secondaryRecipients.length > 0 ? ` (com CC para: ${secondaryRecipients.join(', ')})` : ''}`);
-                await createLog(usernameForLog, 'EMAIL_SENT', 'DECLARATION', id, `E-mail DNI Nº ${number} enviado para: ${primaryRecipient}${secondaryRecipients.length > 0 ? ` (CC: ${secondaryRecipients.join(', ')})` : ''}`);
-            } else {
-                console.warn(`Aviso: Nenhum destinatário de e-mail encontrado para a declaração Nº ${number} (Autor logado: ${usernameForLog}).`);
-                await createLog(usernameForLog, 'EMAIL_WARN', 'DECLARATION', id, `Nenhum destinatário de e-mail encontrado para a DNI Nº ${number}`);
-            }
-        } catch (mailErr) {
-            console.error('ERRO FATAL NO ENVIO DE E-MAIL:', mailErr);
-            console.error('Configuração SMTP usada:', {
-                host: process.env.SMTP_HOST || 'srv-captain--mailserver',
-                port: process.env.SMTP_PORT || '587',
-                user: process.env.SMTP_USER
-            });
-            await createLog(usernameForLog, 'EMAIL_ERROR', 'DECLARATION', id, `Falha no envio de e-mail da DNI Nº ${number}: ${mailErr.message}`);
-        }
-
         // Keep PostgreSQL sequence in sync with inserted numbers
         if (/^\d+$/.test(number)) {
             const numInt = parseInt(number, 10);
@@ -728,7 +624,180 @@ app.post('/api/declarations', async (req, res) => {
             inMemoryStore.declarations.unshift(newDeclHost);
         }
 
-        res.status(201).json({ success: true });
+        // Return HTTP 201 immediately so SMTP latency/timeouts never block DNI saving
+        res.status(201).json({ success: true, number });
+
+        // Notification Email (Asynchronous in background)
+        (async () => {
+            try {
+                console.log(`Iniciando processo de e-mail para declaração Nº ${number} (Solicitante logado: ${usernameForLog})`);
+
+                // 1. Resolver e-mail do autor / operador interno (usuário logado no sistema):
+                // NOTA IMPORTANTE: O e-mail externo do chamado/declaração (employeeEmail) NUNCA é usado como destinatário (Opção 1 - 100% interno).
+                let loggedUserEmail = '';
+                if (usernameForLog && usernameForLog !== 'desconhecido') {
+                    try {
+                        const userResult = await pool.query(
+                            'SELECT email FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1)',
+                            [usernameForLog]
+                        );
+                        loggedUserEmail = (userResult.rows[0]?.email || '').trim().toLowerCase();
+                    } catch (dbErr) {
+                        console.warn('Database user email fetch failed, using memory fallback:', dbErr.message);
+                        const user = inMemoryStore.users.find(u => 
+                            u.username?.toLowerCase() === usernameForLog.toLowerCase() || 
+                            u.email?.toLowerCase() === usernameForLog.toLowerCase()
+                        );
+                        loggedUserEmail = (user?.email || '').trim().toLowerCase();
+                    }
+                }
+
+                if (loggedUserEmail && !loggedUserEmail.includes('@')) {
+                    loggedUserEmail = '';
+                }
+
+                // 2. Resolver destinatários internos marcados para receber e-mails de DNI (receive_dni_emails = true)
+                let dniSubscribers = [];
+                try {
+                    const recipientsResult = await pool.query("SELECT email FROM users WHERE receive_dni_emails = true");
+                    dniSubscribers = [...new Set(recipientsResult.rows
+                        .map(r => r.email?.toLowerCase().trim())
+                        .filter(e => e && e.includes('@')))];
+                } catch (dbErr) {
+                    console.warn('Database subscribers fetch failed, using memory fallback:', dbErr.message);
+                    dniSubscribers = [...new Set(inMemoryStore.users
+                        .filter(u => u.receive_dni_emails && u.email)
+                        .map(u => u.email.toLowerCase().trim())
+                        .filter(e => e && e.includes('@')))];
+                }
+
+                console.log(`[E-mail DNI Nº ${number}] Operador logado: ${usernameForLog} (${loggedUserEmail || 'sem e-mail cadastrado'})`);
+                console.log(`[E-mail DNI Nº ${number}] Assinantes internos ativos (${dniSubscribers.length}):`, dniSubscribers);
+
+                // 3. Montar destinatário principal ('to') e cópias ('cc') - 100% INTERNO
+                let primaryRecipient = '';
+                let secondaryRecipients = [];
+
+                if (loggedUserEmail && loggedUserEmail.includes('@')) {
+                    primaryRecipient = loggedUserEmail;
+                    // Exclui o autor de CC para evitar duplicidade de envio
+                    secondaryRecipients = dniSubscribers.filter(e => e !== loggedUserEmail);
+                } else if (dniSubscribers.length > 0) {
+                    // Caso o operador logado não possua e-mail, envia diretamente para os assinantes internos
+                    primaryRecipient = dniSubscribers[0];
+                    secondaryRecipients = dniSubscribers.slice(1);
+                }
+
+                if (primaryRecipient) {
+                    // Handle filename generation for attachment
+                    const months = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+                    const d = new Date();
+                    const day = d.getDate().toString().padStart(2, '0');
+                    const month = months[d.getMonth()];
+                    const year = d.getFullYear().toString().slice(-2);
+                    const dateStr = `${day}${month}${year}`;
+                    
+                    const ritm = requestNumber || 'RITM0000000';
+                    const company = sender.companyName || 'GE Vernova';
+                    const finalFilename = `SR - ${ritm} - DNI ${number} – ${company} - Reversa – ${dateStr}.pdf`;
+
+                    const emailHtml = `
+                        <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 500px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; background-color: #ffffff; color: #1a202c;">
+                            <div style="padding: 25px 0; text-align: center; background: #f8fafc;">
+                                <img src="cid:logo" alt="DNIGen" style="height: 45px; width: auto; margin-bottom: 10px;">
+                                <h2 style="margin: 0; color: #0f172a; font-size: 18px; font-weight: 800; letter-spacing: -0.025em;">Nova Declaração #DNI ${number}</h2>
+                            </div>
+                            
+                            <div style="padding: 30px;">
+                                <p style="margin-top: 0; font-size: 14px; color: #475569;">Olá <strong>${escapeHtml(usernameForLog)}</strong>, os detalhes da nova declaração estão abaixo:</p>
+                                
+                                <div style="background-color: #f8fafc; border-radius: 8px; padding: 15px; margin: 20px 0;">
+                                    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                                        <tr>
+                                            <td style="padding: 4px 0; color: #64748b; font-weight: 600; width: 90px;">RITM:</td>
+                                            <td style="padding: 4px 0; color: #0f172a; font-weight: 700;">${escapeHtml(ritm)}</td>
+                                        </tr>
+                                        <tr>
+                                            <td style="padding: 4px 0; color: #64748b; font-weight: 600;">Remetente:</td>
+                                            <td style="padding: 4px 0; color: #0f172a; font-weight: 700;">${escapeHtml(sender.name)}</td>
+                                        </tr>
+                                        <tr>
+                                            <td style="padding: 4px 0; color: #64748b; font-weight: 600;">Empresa:</td>
+                                            <td style="padding: 4px 0; color: #0f172a; font-weight: 700;">${escapeHtml(company)}</td>
+                                        </tr>
+                                        <tr>
+                                            <td style="padding: 4px 0; color: #64748b; font-weight: 600;">Destinatário:</td>
+                                            <td style="padding: 4px 0; color: #0f172a; font-weight: 700;">${escapeHtml(recipient.name)}</td>
+                                        </tr>
+                                    </table>
+                                </div>
+                                
+                                <p style="color: #64748b; font-size: 12px; line-height: 1.5; margin-bottom: 0; text-align: center;">
+                                    Documento PDF oficial anexado. Disponível também no sistema.
+                                </p>
+                            </div>
+                        </div>
+                    `;
+
+                    // Resolve logo path (handle both local development and CapRover/production)
+                    let logoPath = path.join(__dirname, '../public/LOGOS/LogoPrincipal.png');
+                    if (process.env.NODE_ENV === 'production') {
+                        logoPath = path.join(__dirname, '../dist/LOGOS/LogoPrincipal.png');
+                    }
+
+                    const attachments = [];
+                    if (fs.existsSync(logoPath)) {
+                        attachments.push({
+                            filename: 'logo.png',
+                            path: logoPath,
+                            cid: 'logo'
+                        });
+                    } else {
+                        console.warn('Logo not found at:', logoPath);
+                    }
+
+                    const mailOptions = {
+                        from: `"DNIGen" <${getSmtpFromAddress()}>`,
+                        to: primaryRecipient,
+                        subject: `Declaração de Transporte #${number} - ${recipient.name}`,
+                        text: `Olá ${usernameForLog}, uma nova declaração de transporte foi gerada (#${number}).\n\nRITM: ${ritm}\nEmpresa: ${company}\nDestinatário: ${recipient.name}\n\nO PDF está em anexo.`,
+                        html: emailHtml,
+                        priority: 'high',
+                        attachments: attachments
+                    };
+
+                    // Passa array no CC apenas quando houver destinatários secundários
+                    if (secondaryRecipients && secondaryRecipients.length > 0) {
+                        mailOptions.cc = secondaryRecipients;
+                    }
+
+                    if (pdfBase64) {
+                        console.log('Anexando PDF em Base64...');
+                        mailOptions.attachments.push({
+                            filename: finalFilename,
+                            content: pdfBase64.split('base64,')[1] || pdfBase64,
+                            encoding: 'base64'
+                        });
+                    }
+
+                    const info = await transporter.sendMail(mailOptions);
+                    console.log(`Email enviado com sucesso! MessageID: ${info.messageId}`);
+                    console.log(`Destinatário principal: ${primaryRecipient}${secondaryRecipients.length > 0 ? ` (com CC para: ${secondaryRecipients.join(', ')})` : ''}`);
+                    await createLog(usernameForLog, 'EMAIL_SENT', 'DECLARATION', id, `E-mail DNI Nº ${number} enviado para: ${primaryRecipient}${secondaryRecipients.length > 0 ? ` (CC: ${secondaryRecipients.join(', ')})` : ''}`);
+                } else {
+                    console.warn(`Aviso: Nenhum destinatário de e-mail encontrado para a declaração Nº ${number} (Autor logado: ${usernameForLog}).`);
+                    await createLog(usernameForLog, 'EMAIL_WARN', 'DECLARATION', id, `Nenhum destinatário de e-mail encontrado para a DNI Nº ${number}`);
+                }
+            } catch (mailErr) {
+                console.error('ERRO FATAL NO ENVIO DE E-MAIL:', mailErr);
+                console.error('Configuração SMTP usada:', {
+                    host: process.env.SMTP_HOST || 'srv-captain--mailserver',
+                    port: process.env.SMTP_PORT || '587',
+                    user: process.env.SMTP_USER
+                });
+                await createLog(usernameForLog, 'EMAIL_ERROR', 'DECLARATION', id, `Falha no envio de e-mail da DNI Nº ${number}: ${mailErr.message}`);
+            }
+        })();
     } catch (err) {
         if (err.code === '23505') {
             console.warn('Duplicate declaration number detected:', number);

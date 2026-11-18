@@ -144,6 +144,68 @@ const App: React.FC = () => {
     setActiveDeclaration(nextState);
   };
 
+  const handleClearForm = () => {
+    setActiveDeclaration(null);
+  };
+
+  const handleSmartImport = async (updatedData: Partial<Declaration>) => {
+    // Se já havia uma DNI gerada/em edição e o operador está importando novos dados (outro chamado),
+    // iniciamos uma declaração limpa (sem id e sem number anteriores) para impedir sobrescrita ou reuso de número.
+    const prevReq = (activeDeclaration?.requestNumber || '').trim().toUpperCase();
+    const newReq = (updatedData.requestNumber || '').trim().toUpperCase();
+    const isImportingDifferentTicket = !!(activeDeclaration?.number && (!prevReq || !newReq || prevReq !== newReq));
+
+    const baseState: Declaration = (!activeDeclaration || isImportingDifferentTicket)
+      ? {
+          id: '',
+          number: '',
+          date: '',
+          city: 'CAMPINAS',
+          sender: INITIAL_SENDER,
+          recipient: INITIAL_RECIPIENT,
+          carrier: INITIAL_CARRIER,
+          equipment: INITIAL_EQUIPMENT,
+          requestNumber: '',
+          employeeEmail: ''
+        }
+      : { ...activeDeclaration };
+
+    if (updatedData.sender) baseState.sender = { ...baseState.sender, ...updatedData.sender };
+    if (updatedData.recipient) baseState.recipient = { ...baseState.recipient, ...updatedData.recipient };
+    if (updatedData.carrier) baseState.carrier = { ...baseState.carrier, ...updatedData.carrier };
+    if (updatedData.equipment) baseState.equipment = updatedData.equipment;
+
+    Object.keys(updatedData).forEach(key => {
+      if (!['sender', 'recipient', 'carrier', 'equipment'].includes(key)) {
+        (baseState as any)[key] = (updatedData as any)[key];
+      }
+    });
+
+    setActiveDeclaration(baseState);
+
+    // Verifica imediatamente no banco se o chamado importado já possui DNI emitida por outro PC/operador
+    if (newReq && newReq.length > 5) {
+      try {
+        const excludeId = baseState.id || '';
+        const res = await fetch(`${API_URL}/declarations/check-request?requestNumber=${encodeURIComponent(newReq)}&excludeId=${encodeURIComponent(excludeId)}`);
+        if (res.ok) {
+          const checkData = await res.json();
+          if (checkData.exists && Array.isArray(checkData.declarations) && checkData.declarations.length > 0) {
+            const first = checkData.declarations[0];
+            const nums = checkData.declarations.map((d: any) => `#${d.number}`).join(', ');
+            showNotification(
+              'Atenção: Chamado Já Emitido',
+              `O chamado ${newReq} já possui DNI emitida no sistema (${nums} - ${first.senderName || 'Sem nome'} em ${first.date}). Verifique se outro operador já gerou este documento antes de prosseguir.`,
+              'info'
+            );
+          }
+        }
+      } catch (err) {
+        console.warn('Não foi possível verificar duplicidade do chamado na importação:', err);
+      }
+    }
+  };
+
   const showNotification = (title: string, message: string, type: NotificationType = 'info', onConfirm?: () => void) => {
     setNotification({ isOpen: true, title, message, type, onConfirm });
   };
@@ -451,30 +513,76 @@ const App: React.FC = () => {
     }
   };
 
-  const handleGenerate = async (data: Partial<Declaration>) => {
+  const handleGenerate = async (data: Partial<Declaration>, skipDuplicateReqCheck = false) => {
+    if (isLoading) return;
     setIsLoading(true);
     let attempts = 0;
     const maxAttempts = 3;
     const isEditing = !!(data?.id && data?.number);
+    const newGenerationId = crypto.randomUUID();
 
-    const tryGenerate = async (): Promise<boolean> => {
-      attempts++;
-      let nextNum = currentNumber + 1;
-      let declarationId = data?.id || crypto.randomUUID();
-      let formattedNum = data?.number || '';
+    // Antes de gerar uma nova DNI, verifica no servidor se outro PC/operador já emitiu DNI para este mesmo chamado (RITM)
+    const reqNumToCheck = (data?.requestNumber || '').trim();
+    if (!isEditing && !skipDuplicateReqCheck && reqNumToCheck.length > 5) {
+      try {
+        const checkRes = await fetch(`${API_URL}/declarations/check-request?requestNumber=${encodeURIComponent(reqNumToCheck)}`);
+        if (checkRes.ok) {
+          const checkData = await checkRes.json();
+          if (checkData.exists && Array.isArray(checkData.declarations) && checkData.declarations.length > 0) {
+            const first = checkData.declarations[0];
+            const nums = checkData.declarations.map((d: any) => `#${d.number}`).join(', ');
+            setIsLoading(false);
+            showNotification(
+              'Chamado Já Possui DNI',
+              `O chamado ${reqNumToCheck} já possui DNI emitida (${nums} - ${first.senderName || 'Sem nome'} em ${first.date}). Deseja realmente emitir uma nova DNI duplicada para este mesmo chamado?`,
+              'confirm',
+              () => {
+                handleGenerate(data, true);
+              }
+            );
+            return;
+          }
+        }
+      } catch (checkErr) {
+        console.warn('Não foi possível verificar duplicidade do chamado antes de gerar:', checkErr);
+      }
+    }
 
-      if (!isEditing || !formattedNum) {
+    const fetchNextNumberFromServer = async (): Promise<number | null> => {
+      for (let i = 0; i < 3; i++) {
         try {
-          const numRes = await fetch(`${API_URL}/declarations/next-number`);
+          const numRes = await fetch(`${API_URL}/declarations/next-number`, { cache: 'no-store' });
           if (numRes.ok) {
             const numData = await numRes.json();
-            if (numData.nextNumber) {
-              nextNum = numData.nextNumber;
+            if (numData.nextNumber && !isNaN(Number(numData.nextNumber))) {
+              return Number(numData.nextNumber);
             }
           }
         } catch (numErr) {
-          console.error('Error fetching next number from server, using fallback:', numErr);
+          console.error(`Tentativa ${i + 1} falhou ao buscar próximo número no servidor:`, numErr);
         }
+        await new Promise(r => setTimeout(r, 400));
+      }
+      return null;
+    };
+
+    const tryGenerate = async (): Promise<boolean> => {
+      attempts++;
+      const declarationId = isEditing ? data.id! : newGenerationId;
+      let formattedNum = isEditing ? (data.number || '') : '';
+      let nextNum = currentNumber;
+
+      if (!isEditing || !formattedNum) {
+        const serverNum = await fetchNextNumberFromServer();
+        if (!serverNum) {
+          showNotification(
+            'Erro de Conexão',
+            'Não foi possível obter o próximo número de DNI no servidor. Verifique sua conexão e tente novamente para evitar duplicidade.',
+            'error'
+          );
+          return false;
+        }
+        nextNum = serverNum;
         formattedNum = nextNum.toString().padStart(8, '0');
       }
 
@@ -1039,10 +1147,12 @@ const App: React.FC = () => {
                       carrier={activeDeclaration?.carrier || INITIAL_CARRIER}
                       equipment={activeDeclaration?.equipment || INITIAL_EQUIPMENT}
                       onUpdate={handleUpdate}
+                      onClear={handleClearForm}
                       requestNumber={activeDeclaration?.requestNumber}
                       employeeEmail={activeDeclaration?.employeeEmail}
                       declarationNumber={activeDeclaration?.number}
                       isEditing={!!(activeDeclaration?.id && activeDeclaration?.number)}
+                      isLoading={isLoading}
                       onGenerate={() => handleGenerate(activeDeclaration!)}
                       showNotification={showNotification}
                       onOpenSmartImport={() => setIsSmartModalOpen(true)}
@@ -1071,9 +1181,16 @@ const App: React.FC = () => {
                     {/* Botões Flutuantes Premium */}
                     <div className="no-print fixed bottom-12 right-12 flex flex-col gap-4 z-50">
                       <ActionButton
+                        icon={<FilePlus2Icon className="w-5 h-5" />}
+                        onClick={() => { setActiveDeclaration(null); setView('edit'); }}
+                        title="Nova Declaração"
+                        variant="secondary"
+                        disabled={isLoading}
+                      />
+                      <ActionButton
                         icon={<Edit2Icon className="w-5 h-5" />}
                         onClick={handleEdit}
-                        title="Editar Dados"
+                        title="Editar Dados desta DNI"
                         variant="secondary"
                         disabled={isLoading}
                       />
@@ -1136,7 +1253,7 @@ const App: React.FC = () => {
         <SmartImportModal
           isOpen={isSmartModalOpen}
           onClose={() => setIsSmartModalOpen(false)}
-          onImport={handleUpdate}
+          onImport={handleSmartImport}
         />
       )}
     </>
